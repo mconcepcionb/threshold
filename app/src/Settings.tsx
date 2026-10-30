@@ -16,6 +16,7 @@ type StateDto = {
   changedOnDisk: boolean;
   floorMs: number;
   volume: number;
+  overlay: string;
   cues: CueDraft[];
   next: (string | null)[];
   trouble: string | null;
@@ -62,6 +63,7 @@ export default function Settings() {
   const [cues, setCues] = useState<CueDraft[]>([]);
   const [floor, setFloor] = useState(600);
   const [volume, setVolume] = useState(1);
+  const [overlay, setOverlay] = useState("auto");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
@@ -79,6 +81,7 @@ export default function Settings() {
       setCues(s.cues);
       setFloor(s.floorMs);
       setVolume(s.volume);
+      setOverlay(s.overlay);
       setError(null);
     } catch (e) {
       const message = String(e);
@@ -96,6 +99,7 @@ export default function Settings() {
       setCues(DEMO.cues);
       setFloor(DEMO.floorMs);
       setVolume(DEMO.volume);
+      setOverlay(DEMO.overlay);
       return;
     }
     load();
@@ -107,7 +111,7 @@ export default function Settings() {
   const save = async () => {
     if (demoMode) return;
     try {
-      await invoke("save_state", { floorMs: floor, volume, cues });
+      await invoke("save_state", { floorMs: floor, volume, overlay, cues });
       setSaved(true);
       setError(null);
       window.setTimeout(() => setSaved(false), 1400);
@@ -187,6 +191,14 @@ export default function Settings() {
               onChange={(e) => setVolume(Number(e.target.value))}
             />
             {Math.round(volume * 100)}%
+          </label>
+          <label className="vol">
+            overlay
+            <select value={overlay} onChange={(e) => setOverlay(e.target.value)}>
+              <option value="auto">auto</option>
+              <option value="permanent">permanent</option>
+              <option value="on_demand">on demand</option>
+            </select>
           </label>
           <span>{cues.length} cues</span>
           <span className={state?.changedOnDisk ? "drift" : ""}>
@@ -355,6 +367,7 @@ const DEMO: StateDto = {
   changedOnDisk: false,
   floorMs: 600,
   volume: 0.8,
+  overlay: "permanent",
   cues: [
     { text: "GO DRINK WATER", at: "every 50m", repeat: "", late: "", seconds: 4, sting: 0, enabled: true },
     { text: "REVIEW MAIL", at: "18:00", repeat: "weekdays", late: "catch_up(20m)", seconds: 6, sting: 0, enabled: true },

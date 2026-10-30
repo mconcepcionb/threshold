@@ -11,7 +11,7 @@ pub mod cue;
 pub mod layout;
 pub mod state;
 
-pub use config::{Config, ConfigError, CueDraft, Store, DEFAULT_FLOOR_MS};
+pub use config::{Config, ConfigError, CueDraft, OverlayMode, Store, DEFAULT_FLOOR_MS};
 pub use cue::{should_fire, Cue, Fire, LatePolicy, Repeat, Schedule};
 pub use layout::{Font, Layout, WrapSpec};
 pub use state::Anchors;

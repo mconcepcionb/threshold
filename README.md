@@ -58,7 +58,9 @@ three seconds after boot, to exercise the locked-screen path. `/?window=overlay&
 renders the card in a plain browser, for screenshots.
 
 The tray menu carries **Pause for an hour**, **Mute the sting**, **Start at
-login** and **Report a problem** — the first two are the emergency stop, and neither is persisted across a
+login**, **Report a problem**, and the reminder that **Ctrl+Alt+Shift+Q** is the
+escape hatch: it clears any card and stops the app firing for an hour, at the OS
+level, so it works even when the UI is buried under a stuck layer. — the first two are the emergency stop, and neither is persisted across a
 restart. While the screen is locked the card cannot be shown, so a cue that fires
 then plays its sting and posts a notification instead.
 
@@ -69,6 +71,18 @@ then plays its sting and posts a notification instead.
 3. ~~**Shell**~~ — Tauri app, tray, overlay, settings, single instance.
 4. **Portability** — Linux and macOS builds, CI matrix.
 5. **Packaging** — signed installers, start at login.
+
+## Overlay modes
+
+The card is drawn by transparent windows — one per monitor, created at that
+monitor's size and never resized. Whether they stay on screen is a setting:
+
+- `auto` (default) — permanent layers on a multi-monitor machine, shown on demand
+  on a single screen
+- `permanent` — the layer is always up; a card is only a DOM change, which is the
+  cleanest transition and costs one composition per monitor
+- `on_demand` — nothing is on screen between cards; the window is shown per card,
+  which is friendlier to screen sharing and games but can flash on the first frame
 
 ## Volume
 

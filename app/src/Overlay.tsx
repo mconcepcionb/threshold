@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 
 type CardPayload = {
+  target: string;
   lines: string[];
   sizePx: number;
   seconds: number;
@@ -73,7 +74,11 @@ export default function Overlay() {
       window.addEventListener("mousedown", onInput);
     }
 
-    const unlisten = listen<CardPayload>("card", (event) => show(event.payload));
+    const unlisten = listen<CardPayload>("card", (event) => {
+      // every layer hears every card; only the named one draws it
+      if (event.payload.target && event.payload.target !== getCurrentWindow().label) return;
+      show(event.payload);
+    });
 
     // the watchdog in Rust can clear a card the page failed to end
     const unlistenClear = listen("card_clear", () => {
@@ -89,7 +94,13 @@ export default function Overlay() {
     if (demoMode && !("__TAURI_INTERNALS__" in window)) {
       setDemo(true);
       const sizePx = Math.min(280, Math.round(window.innerWidth * 0.1458));
-      show({ lines: ["GO DRINK", "WATER"], sizePx, seconds: 40, floorMs: 600 });
+      show({
+        target: "",
+        lines: ["GO DRINK", "WATER"],
+        sizePx,
+        seconds: 40,
+        floorMs: 600,
+      });
     }
 
     return () => {

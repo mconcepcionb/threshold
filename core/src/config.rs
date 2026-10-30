@@ -18,12 +18,55 @@ use serde::{Deserialize, Serialize};
 use crate::cue::{Cue, LatePolicy, Repeat, Schedule};
 
 pub const FORMAT_VERSION: u32 = 1;
+
+/// How the card reaches the screen. A permanent layer is invisible when idle and
+/// costs one composition per monitor; showing a window on demand keeps nothing on
+/// screen between cards, at the risk of a first-frame flash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverlayMode {
+    /// Permanent layer on multi-monitor machines, on demand on a single screen.
+    #[default]
+    Auto,
+    Permanent,
+    OnDemand,
+}
+
+impl OverlayMode {
+    pub fn parse(s: &str) -> Result<OverlayMode, String> {
+        match s.trim() {
+            "auto" | "" => Ok(OverlayMode::Auto),
+            "permanent" => Ok(OverlayMode::Permanent),
+            "on_demand" | "on-demand" => Ok(OverlayMode::OnDemand),
+            other => Err(format!(
+                "overlay `{other}` is not auto, permanent or on_demand"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OverlayMode::Auto => "auto",
+            OverlayMode::Permanent => "permanent",
+            OverlayMode::OnDemand => "on_demand",
+        }
+    }
+
+    /// What the mode means on a machine with `monitors` screens.
+    pub fn permanent_on(self, monitors: usize) -> bool {
+        match self {
+            OverlayMode::Permanent => true,
+            OverlayMode::OnDemand => false,
+            OverlayMode::Auto => monitors > 1,
+        }
+    }
+}
 pub const DEFAULT_FLOOR_MS: u32 = 600;
 pub const MAX_TEXT_CHARS: usize = 40;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub floor_ms: u32,
+    pub overlay: OverlayMode,
     /// Sting level, 0.0 to 1.0. One knob, because the sound is one sound.
     pub volume: f32,
     pub cues: Vec<Cue>,
@@ -31,7 +74,12 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { floor_ms: DEFAULT_FLOOR_MS, volume: 1.0, cues: Vec::new() }
+        Config {
+            floor_ms: DEFAULT_FLOOR_MS,
+            overlay: OverlayMode::Auto,
+            volume: 1.0,
+            cues: Vec::new(),
+        }
     }
 }
 
@@ -62,6 +110,8 @@ struct ConfigFile {
     floor_ms: u32,
     #[serde(default = "default_volume")]
     volume: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    overlay: Option<String>,
     #[serde(default, rename = "cue", skip_serializing_if = "Vec::is_empty")]
     cues: Vec<CueFile>,
 }
@@ -180,7 +230,11 @@ impl Config {
             cues.push(raw.into_cue(index).map_err(|message| ConfigError::Cue { index, message })?);
         }
 
-        let config = Config { floor_ms: file.floor_ms, volume: file.volume, cues };
+        let overlay = match file.overlay.as_deref() {
+            None => OverlayMode::Auto,
+            Some(s) => OverlayMode::parse(s).map_err(|message| ConfigError::Invalid(message))?,
+        };
+        let config = Config { floor_ms: file.floor_ms, overlay, volume: file.volume, cues };
         config.validate()?;
         Ok(config)
     }
@@ -190,6 +244,7 @@ impl Config {
         let file = ConfigFile {
             version: FORMAT_VERSION,
             floor_ms: self.floor_ms,
+            overlay: (self.overlay != OverlayMode::Auto).then(|| self.overlay.as_str().to_string()),
             volume: self.volume,
             cues: self.cues.iter().map(CueFile::from_cue).collect(),
         };
@@ -829,5 +884,46 @@ mod arrival_tests {
         let before = config.cues.len();
         config.merge_starter();
         assert_eq!(config.cues.len(), before);
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    #[test]
+    fn auto_is_permanent_only_on_multiple_screens() {
+        assert!(!OverlayMode::Auto.permanent_on(1));
+        assert!(OverlayMode::Auto.permanent_on(2));
+        assert!(OverlayMode::Permanent.permanent_on(1));
+        assert!(!OverlayMode::OnDemand.permanent_on(3));
+    }
+
+    #[test]
+    fn the_mode_round_trips_and_auto_is_omitted() {
+        let config = Config::parse(
+            std::path::Path::new("cues.toml"),
+            "[[cue]]\ntext = \"X\"\nat = \"18:00\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.overlay, OverlayMode::Auto);
+        assert!(!config.to_toml().unwrap().contains("overlay ="));
+
+        let mut with_mode = config.clone();
+        with_mode.overlay = OverlayMode::OnDemand;
+        let text = with_mode.to_toml().unwrap();
+        assert!(text.contains("overlay = \"on_demand\""), "{text}");
+        let again = Config::parse(std::path::Path::new("cues.toml"), &text).unwrap();
+        assert_eq!(again.overlay, OverlayMode::OnDemand);
+    }
+
+    #[test]
+    fn a_bad_mode_is_rejected() {
+        let err = Config::parse(
+            std::path::Path::new("cues.toml"),
+            "overlay = \"sometimes\"\n[[cue]]\ntext = \"X\"\nat = \"18:00\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("overlay"), "{err}");
     }
 }

@@ -18,10 +18,11 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Wry,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use threshold_core::{
-    should_fire, Anchors, Config, Cue, CueDraft, Fire, Font, Layout, Repeat, Schedule, Store,
-    WrapSpec,
+    should_fire, Anchors, Config, Cue, CueDraft, Fire, Font, Layout, OverlayMode, Repeat,
+    Schedule, Store, WrapSpec,
 };
 
 static FONT_BYTES: &[u8] = include_bytes!("../../../core/assets/texgyreadventor-bold.otf");
@@ -88,6 +89,39 @@ fn install_crash_reporter(dir: PathBuf) {
     }));
 }
 
+/// The way out when the UI is unusable: an OS-level chord that clears every
+/// card and gives input back, whether or not the app wants to cooperate.
+fn escape_shortcut() -> Shortcut {
+    Shortcut::new(
+        Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+        Code::KeyQ,
+    )
+}
+
+fn escape_hatch(app: &AppHandle) {
+    let state = app.state::<Mutex<Runtime>>();
+    let mut rt = match state.lock() {
+        Ok(rt) => rt,
+        Err(_) => return,
+    };
+    let labels: Vec<String> = rt.overlays.iter().map(|o| o.label.clone()).collect();
+    let permanent = rt.permanent;
+    rt.active = None;
+    rt.paused_until = Some(Local::now() + chrono::Duration::hours(1));
+
+    for label in labels {
+        let _ = app.emit_to(&label, "card_clear", ());
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.set_ignore_cursor_events(true);
+            if !permanent {
+                let _ = w.hide();
+            }
+        }
+    }
+    refresh_tray(app, &rt);
+    trace("escape hatch: cards cleared, paused for an hour");
+}
+
 struct AutostartItem(Mutex<Option<CheckMenuItem<Wry>>>);
 struct MuteItem(Mutex<Option<CheckMenuItem<Wry>>>);
 
@@ -111,6 +145,9 @@ struct Runtime {
     overlays: Vec<Overlay>,
     /// Sound off, cards still fire. The polite half of an emergency stop.
     muted: bool,
+    /// Always-up layers, or windows shown only while a card is. Resolved from
+    /// the config at boot and when the setting changes.
+    permanent: bool,
     /// No cards at all until this instant. The impolite half.
     paused_until: Option<DateTime<Local>>,
     /// The layer currently showing a card, if any, and the window that had focus
@@ -141,6 +178,10 @@ struct StateDto {
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct CardPayload {
+    /// The layer this card belongs to. An event reaches every webview that
+    /// listens, so the page checks its own label rather than trusting that only
+    /// the intended window was addressed.
+    target: String,
     lines: Vec<String>,
     size_px: f32,
     seconds: u32,
@@ -186,16 +227,34 @@ fn save_state(
     rt: State<'_, Mutex<Runtime>>,
     floor_ms: u32,
     volume: f32,
+    overlay: String,
     cues: Vec<CueDraft>,
 ) -> Result<(), String> {
     let mut rt = rt.lock().map_err(|_| "state poisoned".to_string())?;
     let mut config = rt.store.config().clone();
     config.floor_ms = floor_ms;
     config.volume = volume.clamp(0.0, 1.0);
+    config.overlay = OverlayMode::parse(&overlay)?;
     config.from_drafts(&cues).map_err(|e| e.to_string())?;
     rt.store.save(config).map_err(|e| e.to_string())?;
     rt.trouble = None;
     rebuild_next(&mut rt);
+
+    // the mode can change while running: put the layers where they belong
+    let want_permanent = rt.store.config().overlay.permanent_on(rt.overlays.len());
+    if want_permanent != rt.permanent {
+        rt.permanent = want_permanent;
+        for o in &rt.overlays {
+            if let Some(w) = app.get_webview_window(&o.label) {
+                if want_permanent {
+                    let _ = w.show();
+                } else if rt.active.as_deref() != Some(o.label.as_str()) {
+                    let _ = w.hide();
+                }
+            }
+        }
+    }
+
     refresh_tray(&app, &rt);
     Ok(())
 }
@@ -275,26 +334,46 @@ fn card_floor(app: AppHandle, label: String) {
 }
 
 /// The Window is over, or the card was dismissed early: input goes back to
-/// pass-through and the keyboard goes back to whoever had it.
+/// pass-through, the keyboard goes back, and an on-demand layer leaves the screen.
 #[tauri::command]
 fn card_end(app: AppHandle, label: String) {
+    end_card(&app, &label);
+}
+
+/// Ending is idempotent and never conditional on this layer still being the
+/// active one: a second cue landing on another monitor must not leave the first
+/// layer accepting clicks forever with nothing drawn on it.
+fn end_card(app: &AppHandle, label: &str) {
     let state = app.state::<Mutex<Runtime>>();
-    let previous = {
+    let (previous, permanent) = {
         let mut rt = match state.lock() {
             Ok(rt) => rt,
             Err(_) => return,
         };
-        if rt.active.as_deref() != Some(label.as_str()) {
-            return;
+        let was_active = rt.active.as_deref() == Some(label);
+        if was_active {
+            rt.active = None;
         }
-        rt.active = None;
-        rt.focus_back.take()
+        (
+            if was_active { rt.focus_back.take() } else { None },
+            rt.permanent,
+        )
     };
-    if let Some(w) = app.get_webview_window(&label) {
+
+    if let Some(w) = app.get_webview_window(label) {
         let _ = w.set_ignore_cursor_events(true);
+        if !permanent {
+            let _ = w.hide();
+        }
     }
+
     if let Some(handle) = previous {
-        focus_window(handle);
+        if !focus_window(handle) {
+            // the keyboard must not be left on an invisible layer
+            if let Some(settings) = app.get_webview_window("settings") {
+                let _ = settings.set_focus();
+            }
+        }
     }
     trace(&format!("end {label}"));
 }
@@ -357,12 +436,12 @@ fn foreground_window() -> Option<isize> {
 }
 
 #[cfg(windows)]
-fn focus_window(handle: isize) {
+fn focus_window(handle: isize) -> bool {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-    unsafe {
-        let _ = SetForegroundWindow(HWND(handle as *mut _));
-    }
+    // Windows refuses this for a process that is not already foreground, so the
+    // answer matters: a silent failure leaves the keyboard on an invisible layer.
+    unsafe { SetForegroundWindow(HWND(handle as *mut _)).as_bool() }
 }
 
 #[cfg(not(windows))]
@@ -371,7 +450,9 @@ fn foreground_window() -> Option<isize> {
 }
 
 #[cfg(not(windows))]
-fn focus_window(_handle: isize) {}
+fn focus_window(_handle: isize) -> bool {
+    false
+}
 
 fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
     // Which layer is under the pointer right now. Each one was born at its own
@@ -382,7 +463,7 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
         .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
 
-    let (overlays, muted, volume) = {
+    let (overlays, muted, volume, permanent) = {
         let state = app.state::<Mutex<Runtime>>();
         let mut rt = match state.lock() {
             Ok(rt) => rt,
@@ -390,7 +471,7 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
         };
         rt.active = Some(String::new()); // filled once the monitor is known
         rt.focus_back = foreground_window();
-        (rt.overlays.clone(), rt.muted, rt.store.config().volume)
+        (rt.overlays.clone(), rt.muted, rt.store.config().volume, rt.permanent)
     };
 
     let target = monitor
@@ -412,7 +493,13 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
     let Layout { lines, size_px } =
         threshold_core::layout::wrap(font, &cue.text.to_uppercase(), width_css, &WrapSpec::hd());
 
-    let payload = CardPayload { lines, size_px, seconds: cue.seconds, floor_ms };
+    let payload = CardPayload {
+        target: target.label.clone(),
+        lines,
+        size_px,
+        seconds: cue.seconds,
+        floor_ms,
+    };
 
     // A locked screen cannot show a window, so a card fired now would be spent
     // unseen. The sting still plays; the notification is what reaches them.
@@ -422,6 +509,9 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
     // one card at a time: every layer is always up, so the other one is only
     // cleared by the page when it dismisses
     if !locked {
+        if !permanent {
+            let _ = window.show();
+        }
         let _ = app.emit_to(&target.label, "card", payload);
         let state = app.state::<Mutex<Runtime>>();
         let mut rt = match state.lock() {
@@ -692,6 +782,15 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed && *shortcut == escape_shortcut() {
+                        escape_hatch(app);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let path = config_path();
             install_crash_reporter(
@@ -709,12 +808,15 @@ pub fn run() {
             // is created from the config file and starts asking for it
             // immediately; building the overlay webviews first made that request
             // arrive before the state existed.
+            app.global_shortcut().register(escape_shortcut())?;
+
             let mut runtime = Runtime {
                 store,
                 anchors,
                 state_path,
                 overlays: Vec::new(),
                 muted: false,
+                permanent: false,
                 paused_until: None,
                 active: None,
                 focus_back: None,
@@ -727,8 +829,18 @@ pub fn run() {
 
             // One transparent layer per monitor, born at that monitor's size.
             // Nothing is ever resized, so nothing can reflow or stretch.
+            //
+            // Whether they stay on screen depends on the mode: a permanent layer
+            // is invisible when idle but always composed; on-demand keeps nothing
+            // on screen between cards.
             let mut overlays = Vec::new();
             let monitors = app.available_monitors().unwrap_or_default();
+            let permanent = {
+                let state = app.state::<Mutex<Runtime>>();
+                let mut rt = state.lock().expect("state was just managed");
+                rt.permanent = rt.store.config().overlay.permanent_on(monitors.len());
+                rt.permanent
+            };
             for (i, monitor) in monitors.iter().enumerate() {
                 let label = format!("overlay-{i}");
                 let scale = monitor.scale_factor();
@@ -748,7 +860,7 @@ pub fn run() {
                 .skip_taskbar(true)
                 .resizable(false)
                 .shadow(false)
-                .visible(true)
+                .visible(permanent)
                 .focused(false)
                 .position(monitor.position().x as f64 / scale, monitor.position().y as f64 / scale)
                 .inner_size(logical_w, logical_h)
@@ -801,6 +913,13 @@ pub fn run() {
             let resume = MenuItem::with_id(app, "resume", "Resume", true, None::<&str>)?;
             let mute = CheckMenuItem::with_id(app, "mute", "Mute the sting", true, false, None::<&str>)?;
             app.manage(MuteItem(Mutex::new(Some(mute.clone()))));
+            let hint = MenuItem::with_id(
+                app,
+                "hint",
+                "Escape hatch: Ctrl+Alt+Shift+Q",
+                false,
+                None::<&str>,
+            )?;
             let report = MenuItem::with_id(app, "report", "Report a problem", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(
@@ -817,6 +936,7 @@ pub fn run() {
                     &autostart,
                     &PredefinedMenuItem::separator(app)?,
                     &report,
+                    &hint,
                     &quit,
                 ],
             )?;
