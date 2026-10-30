@@ -6,6 +6,15 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Audio output moved to cpal 0.18. The rendered sting is unchanged; the output
+  device path was smoke-tested with the demo cards.
+- Frontend toolchain: Vite 8, `@vitejs/plugin-react` 6, React 19, TypeScript 7.
+- Test environment: jsdom 30 (Node 22.22+, 24.15+ or 26+).
+- Rust MSRV is now 1.90, which Tauri 2.12 already required.
+- Release workflow uses `tauri-action` v1.
+
 ## [0.1.0] — 2026-10-30
 
 First public alpha. Windows is the supported target; macOS and Linux are
