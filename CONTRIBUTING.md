@@ -19,7 +19,7 @@ request.
 
 - Rust stable (1.90 or newer; the repo pins stable in `rust-toolchain.toml`)
   with `rustfmt` and `clippy`
-- Node 22 or newer
+- Node 22.22+, 24.15+, or 26+
 - Windows: WebView2 (installed by default on Windows 10/11) and the MSVC build
   tools
 - Linux: `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`,
