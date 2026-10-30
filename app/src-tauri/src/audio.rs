@@ -424,7 +424,7 @@ pub fn play(frames: Vec<(f32, f32)>, sr: f32) -> Result<(), Box<dyn std::error::
     let device = host.default_output_device().ok_or("no output device")?;
     let config = device.default_output_config()?;
     let channels = config.channels() as usize;
-    let out_rate = config.sample_rate().0 as f32;
+    let out_rate = config.sample_rate() as f32;
 
     // resample by linear interpolation if the device disagrees with the render
     let src_len = frames.len();
@@ -447,7 +447,7 @@ pub fn play(frames: Vec<(f32, f32)>, sr: f32) -> Result<(), Box<dyn std::error::
     let mut i = 0usize;
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_output_stream(
-            &config.into(),
+            config.into(),
             move |data: &mut [f32], _| {
                 for frame in data.chunks_mut(channels) {
                     let (l, r) = src.get(i).copied().unwrap_or((0.0, 0.0));
@@ -464,7 +464,7 @@ pub fn play(frames: Vec<(f32, f32)>, sr: f32) -> Result<(), Box<dyn std::error::
             None,
         )?,
         cpal::SampleFormat::I16 => device.build_output_stream(
-            &config.into(),
+            config.into(),
             {
                 let src = src.clone();
                 let mut i = 0usize;
