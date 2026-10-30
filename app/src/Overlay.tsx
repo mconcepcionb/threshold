@@ -75,6 +75,14 @@ export default function Overlay() {
 
     const unlisten = listen<CardPayload>("card", (event) => show(event.payload));
 
+    // the watchdog in Rust can clear a card the page failed to end
+    const unlistenClear = listen("card_clear", () => {
+      clearTimers();
+      detachInput();
+      setCard(null);
+      setInteractive(false);
+    });
+
     // viewable in a plain browser: /index.html?window=overlay&demo
     // (the layout normally comes from Rust, so this is a hardcoded card)
     const demoMode = new URLSearchParams(window.location.search).has("demo");
@@ -88,6 +96,7 @@ export default function Overlay() {
       clearTimers();
       detachInput();
       unlisten.then((f) => f());
+      unlistenClear.then((f) => f());
     };
   }, []);
 

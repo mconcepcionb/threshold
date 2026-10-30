@@ -404,9 +404,9 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
         .or_else(|| overlays.first().cloned());
 
     let Some(target) = target else { return };
-    if app.get_webview_window(&target.label).is_none() {
-        return;
-    }
+    let Some(window) = app.get_webview_window(&target.label) else { return };
+    // a stale interactive layer from an earlier card must not swallow this one
+    let _ = window.set_ignore_cursor_events(true);
 
     let width_css = target.size.width as f32 / target.scale as f32;
     let Layout { lines, size_px } =
