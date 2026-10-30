@@ -43,7 +43,7 @@ jobs:
       - run: node scripts/check-versions.mjs
       - run: cargo test --locked --manifest-path core/Cargo.toml
       - run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
