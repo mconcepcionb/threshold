@@ -9,6 +9,7 @@ dist/
 
 # local dev
 dev.log
+app/.screenshots-cache/
 app/icon-src.png
 app/make-icon.cjs
 app/src-tauri/gen/

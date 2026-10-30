@@ -54,6 +54,30 @@ without a window. If you fix a bug in the shell, add the smallest test that
 would have caught it; `core/src/scheduler.rs` is the model for a decision that
 moved out of the shell so it could be tested.
 
+## Screenshots
+
+The images in the README are rendered from the UI itself:
+
+```sh
+cd app
+npx playwright install chromium   # once; or use --channel chrome below
+npm run screenshots
+```
+
+`scripts/screenshots.mjs` starts Vite and stages a desktop around the real
+overlay and settings window. It writes `docs/screenshots/card.jpg` (1920×1080)
+and `settings.jpg` (1600×1000). Pass options to the script directly:
+
+```sh
+node scripts/screenshots.mjs --scene card
+node scripts/screenshots.mjs --wallpaper nebula
+node scripts/screenshots.mjs --wallpaper ~/Pictures/wall.jpg --text "REVIEW|MAIL"
+```
+
+The default backdrop is an Unsplash photo, cached in `.screenshots-cache/` and
+never committed; a built-in gradient is used when the download fails. A local
+Chrome or Edge is used automatically when the bundled Chromium is missing.
+
 ## Versioning and releases
 
 - Version lives in `app/package.json`, `app/src-tauri/tauri.conf.json`,

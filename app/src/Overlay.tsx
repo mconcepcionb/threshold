@@ -11,6 +11,10 @@ type CardPayload = {
   floorMs: number;
 };
 
+const demoParams = new URLSearchParams(window.location.search);
+// A plain browser has no IPC: the demo card draws, but must not call Rust.
+const browserDemo = demoParams.has("demo") && !("__TAURI_INTERNALS__" in window);
+
 /**
  * The Card. Hard cut in, Floor, Window, hard cut out — no transitions anywhere.
  *
@@ -46,7 +50,7 @@ export default function Overlay() {
       setCard(null);
       setInteractive(false);
       // the window never hides: clearing the card is the whole dismissal
-      invoke("card_end", { label: getCurrentWindow().label }).catch(() => {});
+      if (!browserDemo) invoke("card_end", { label: getCurrentWindow().label }).catch(() => {});
     }
 
     function show(payload: CardPayload) {
@@ -55,12 +59,12 @@ export default function Overlay() {
       setCard(payload);
       setInteractive(false);
 
-      const label = getCurrentWindow().label;
+      const label = browserDemo ? "" : getCurrentWindow().label;
       const startedAt = window.performance.now();
       timers.current.push(
         window.setTimeout(() => {
           setInteractive(true);
-          invoke("card_floor", { label }).catch(() => {});
+          if (!browserDemo) invoke("card_floor", { label }).catch(() => {});
         }, payload.floorMs)
       );
       timers.current.push(window.setTimeout(dismiss, payload.seconds * 1000));
@@ -74,29 +78,36 @@ export default function Overlay() {
       window.addEventListener("mousedown", onInput);
     }
 
-    const unlisten = listen<CardPayload>("card", (event) => {
-      // every layer hears every card; only the named one draws it
-      if (event.payload.target && event.payload.target !== getCurrentWindow().label) return;
-      show(event.payload);
-    });
+    const unlisten = browserDemo
+      ? Promise.resolve(() => {})
+      : listen<CardPayload>("card", (event) => {
+          // every layer hears every card; only the named one draws it
+          if (event.payload.target && event.payload.target !== getCurrentWindow().label) return;
+          show(event.payload);
+        });
 
     // the watchdog in Rust can clear a card the page failed to end
-    const unlistenClear = listen("card_clear", () => {
-      clearTimers();
-      detachInput();
-      setCard(null);
-      setInteractive(false);
-    });
+    const unlistenClear = browserDemo
+      ? Promise.resolve(() => {})
+      : listen("card_clear", () => {
+          clearTimers();
+          detachInput();
+          setCard(null);
+          setInteractive(false);
+        });
 
-    // viewable in a plain browser: /index.html?window=overlay&demo
-    // (the layout normally comes from Rust, so this is a hardcoded card)
-    const demoMode = new URLSearchParams(window.location.search).has("demo");
-    if (demoMode && !("__TAURI_INTERNALS__" in window)) {
+    // viewable in a plain browser: /index.html?window=overlay&demo&text=GO%20DRINK|WATER
+    // `bare` drops the painted demo desktop so a screenshot stage can supply one
+    if (browserDemo) {
       setDemo(true);
       const sizePx = Math.min(280, Math.round(window.innerWidth * 0.1458));
+      const lines = (demoParams.get("text") ?? "GO DRINK|WATER")
+        .split("|")
+        .map((line) => line.trim())
+        .filter(Boolean);
       show({
         target: "",
-        lines: ["GO DRINK", "WATER"],
+        lines: lines.length ? lines : ["GO DRINK", "WATER"],
         sizePx,
         seconds: 40,
         floorMs: 600,
@@ -115,7 +126,7 @@ export default function Overlay() {
 
   return (
     <>
-      {demo && (
+      {demo && !demoParams.has("bare") && (
         <div className="demo-desktop" aria-hidden="true">
           <div className="editor" />
           <div className="doc" />

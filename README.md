@@ -12,7 +12,7 @@ A desktop application that interrupts the working day with a full-screen
 typographic card and one impact sound, at moments the operator schedules
 personally.
 
-![A card over a live desktop](docs/screenshots/card.jpg)
+![A card over a desktop](docs/screenshots/card.jpg)
 
 <div align="center">
 
@@ -268,6 +268,9 @@ cd app && npm test && npm run build
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for prerequisites, formatting, clippy,
 the version check and the release process. Changes are recorded in
 [CHANGELOG.md](./CHANGELOG.md).
+
+The README images are generated from the UI itself: `cd app && npm run
+screenshots` (see [CONTRIBUTING.md](./CONTRIBUTING.md#screenshots)).
 
 ## Clearance
 

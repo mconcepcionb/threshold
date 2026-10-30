@@ -6,6 +6,11 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `npm run screenshots` renders the README images from the real overlay and
+  settings UI over a staged desktop, with a replaceable wallpaper and card text.
+
 ### Changed
 
 - Audio output moved to cpal 0.18. The rendered sting is unchanged; the output
@@ -14,6 +19,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Test environment: jsdom 30 (Node 22.22+, 24.15+ or 26+).
 - Rust MSRV is now 1.90, which Tauri 2.12 already required.
 - Release workflow uses `tauri-action` v1.
+
+### Fixed
+
+- The browser demo (`/?window=overlay&demo`) no longer calls Tauri IPC, so the
+  card renders outside the app shell; `&bare` and `&text=` support the
+  screenshot stage.
 
 ## [0.1.0] — 2026-10-30
 
