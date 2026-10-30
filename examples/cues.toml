@@ -1,0 +1,83 @@
+# Starter cues for Threshold.
+#
+# Copy to your config directory and edit, or open the app and use the settings
+# window — both write this same file.
+#
+#   text      required, up to 40 characters, rendered uppercase
+#   at        required: "18:00" | "every 25m" | "in 25m"
+#   repeat    once | daily | weekdays | weekly(mon,wed,fri)     default: once
+#   late      exact | catch_up(10m) | next_opportunity          default: exact
+#   seconds   card duration, 1-120                              default: 4
+#   sting     semitone offset for the thump, -6 to 6            default: 0
+#   enabled   false disarms without deleting                    default: true
+#
+# Half of these are instructions and half are places. The place names are the
+# ones that look most like the thing this project borrowed from.
+
+[[cue]]
+text = "THRESHOLD"
+at = "08:00"
+repeat = "weekdays"
+
+[[cue]]
+text = "WAREHOUSE"
+at = "09:00"
+repeat = "weekdays"
+late = "catch_up(15m)"
+
+[[cue]]
+text = "DEEP DIVE"
+at = "every 50m"
+repeat = "weekdays"
+seconds = 3
+
+[[cue]]
+text = "STAND UP"
+at = "every 90m"
+
+[[cue]]
+text = "LOOK AWAY"
+at = "every 60m"
+seconds = 2
+
+[[cue]]
+text = "GO DRINK WATER"
+at = "every 120m"
+seconds = 4
+
+[[cue]]
+text = "CROSSROADS"
+at = "12:30"
+repeat = "daily"
+
+[[cue]]
+text = "EAT SOMETHING"
+at = "13:00"
+repeat = "daily"
+late = "next_opportunity"
+
+[[cue]]
+text = "REVIEW MAIL"
+at = "18:00"
+repeat = "weekdays"
+late = "catch_up(20m)"
+seconds = 6
+
+[[cue]]
+text = "EAGLE LIMITED AWE"
+at = "17:30"
+repeat = "weekly(fri)"
+seconds = 5
+
+[[cue]]
+text = "THE LONG HALL"
+at = "22:30"
+repeat = "daily"
+sting = -3
+seconds = 6
+
+[[cue]]
+text = "SHIFT CHANGE"
+at = "23:00"
+repeat = "daily"
+enabled = false

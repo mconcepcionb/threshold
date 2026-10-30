@@ -1,0 +1,12 @@
+[package]
+name = "threshold-core"
+version = "0.1.0"
+edition = "2021"
+description = "Threshold: cue model, scheduler and card layout. No UI, no OS."
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "0.8"
+ttf-parser = "0.25"

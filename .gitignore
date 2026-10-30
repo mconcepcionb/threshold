@@ -1,0 +1,22 @@
+# agent tooling, not part of the project
+.agents/
+skills-lock.json
+
+# build output
+target/
+node_modules/
+dist/
+
+# local dev
+dev.log
+app/icon-src.png
+app/make-icon.cjs
+app/src-tauri/gen/
+
+# screenshots and local scratch
+.openchamber/
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db

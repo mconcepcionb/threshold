@@ -1,0 +1,34 @@
+[package]
+name = "threshold"
+version = "0.1.0"
+description = "A desktop app that interrupts your day with a card and a thump"
+default-run = "threshold"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "threshold_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+directories = "5"
+cpal = "0.15"
+threshold-core = { path = "../../core" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_StationsAndDesktops"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
