@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/mconcepcionb/threshold/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
+  - name: How to build and test
+    url: https://github.com/mconcepcionb/threshold/blob/main/CONTRIBUTING.md
+    about: Prerequisites, checks and the release process.

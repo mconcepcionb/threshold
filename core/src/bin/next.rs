@@ -3,12 +3,14 @@
 //!     cargo run --bin next -- ../examples/cues.toml
 //!
 //! Useful on its own while there is no app shell, and useful later as the
-//! answer to "why didn't it fire?".
+//! answer to "why didn't it fire?". Read-only: a mistyped path does not create
+//! a config, and `state.toml` beside the file is read for the interval anchors.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use chrono::Local;
-use threshold_core::{Cue, Store};
+use threshold_core::{Anchors, Config, Cue, LatePolicy, Repeat, Schedule};
 
 fn main() -> ExitCode {
     let path = match std::env::args().nth(1) {
@@ -19,27 +21,43 @@ fn main() -> ExitCode {
         }
     };
 
-    let store = match Store::open(&path) {
-        Ok(s) => s,
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("could not read {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let config = match Config::parse(Path::new(&path), &text) {
+        Ok(config) => config,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
 
+    let anchors = Anchors::load(&Path::new(&path).with_file_name("state.toml"));
+    let mut cues = config.cues.clone();
+    anchors.apply(&mut cues);
+
     let now = Local::now();
-    let config = store.config();
-    println!("{} · floor {}ms · {} cues", store.path().display(), config.floor_ms, config.cues.len());
+    println!(
+        "{} · floor {}ms · {} cues",
+        path,
+        config.floor_ms,
+        cues.len()
+    );
     println!("now {}\n", now.format("%Y-%m-%d %H:%M:%S %a"));
 
     let mut rows: Vec<(Option<chrono::DateTime<Local>>, &Cue)> =
-        config.cues.iter().map(|c| (c.next_fire(now), c)).collect();
+        cues.iter().map(|c| (c.next_fire(now), c)).collect();
     rows.sort_by_key(|(at, _)| *at);
 
     for (at, cue) in rows {
         let when = match at {
             Some(t) => format!("{} (in {})", t.format("%a %H:%M"), humanize(t - now)),
-            None => "never — one-shot already missed".to_string(),
+            None if cue.is_one_shot() => "never - one-shot already fired".to_string(),
+            None => "never".to_string(),
         };
         let state = if cue.enabled { "" } else { " · disarmed" };
         let schedule = describe(cue);
@@ -50,7 +68,6 @@ fn main() -> ExitCode {
 }
 
 fn describe(cue: &Cue) -> String {
-    use threshold_core::{LatePolicy, Repeat, Schedule};
     let at = match cue.schedule {
         Schedule::At(t) => t.format("%H:%M").to_string(),
         Schedule::Every(d) => format!("every {}m", d.num_minutes()),

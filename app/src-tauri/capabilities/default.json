@@ -5,9 +5,6 @@
   "windows": ["settings", "overlay-*"],
   "permissions": [
     "core:default",
-    "core:window:allow-hide",
-    "core:window:allow-show",
-    "core:window:allow-set-focus",
     "core:app:default",
     "core:event:default"
   ]

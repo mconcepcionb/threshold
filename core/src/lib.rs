@@ -6,12 +6,14 @@
 //! overflows.
 
 pub mod config;
-pub mod fsutil;
 pub mod cue;
+pub mod fsutil;
 pub mod layout;
+pub mod scheduler;
 pub mod state;
 
 pub use config::{Config, ConfigError, CueDraft, OverlayMode, Store, DEFAULT_FLOOR_MS};
 pub use cue::{should_fire, Cue, Fire, LatePolicy, Repeat, Schedule};
 pub use layout::{Font, Layout, WrapSpec};
+pub use scheduler::{plan_tick, TickPlan};
 pub use state::Anchors;

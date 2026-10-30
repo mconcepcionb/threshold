@@ -3,8 +3,8 @@
 Status: accepted
 
 The Sting is generated sample by sample in Rust (click transient, pitch-dropping
-body, low noise bed, convolution tail) and written to the audio device directly.
-There is no audio asset, no decoder, no `Audio` element.
+body, low noise bed, algorithmic stereo tail) and written to the audio device
+directly. There is no audio asset, no decoder, no `Audio` element.
 
 Two reasons. First, the webview is the wrong place for the one sound the product
 depends on: the Linux build runs WebKitGTK, which has long-standing trouble

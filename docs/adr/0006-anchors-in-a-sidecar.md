@@ -1,4 +1,4 @@
-# Interval anchors live beside the config, not inside it
+# Anchors live beside the config, not inside it
 
 Status: accepted
 
@@ -13,11 +13,18 @@ write can land on top of an unsaved editor buffer. And because a Cue's id is its
 position in the array, an anchor write races any edit that reorders cues.
 
 Anchors now live in `state.toml` next to the config, owned solely by the app, and
-`cues.toml` is only ever written when the user saves from the settings window.
-The sidecar is keyed by what the cue *is* — text plus schedule — rather than its
-index, so reordering or inserting cues keeps chains intact, while editing either
-field starts the chain over. That is the honest reading of "you changed the cue".
+`cues.toml` is only written when the user saves from the settings window — or
+when startup finds a file it cannot parse and replaces it with the starter set
+(the unparseable file is kept as `cues.toml.broken-<timestamp>`). The sidecar is
+keyed by what the cue *is* - text plus schedule - rather than its index, so
+reordering or inserting cues keeps chains intact, while editing either field
+starts the chain over. That is the honest reading of "you changed the cue".
 
-_Consequences_: deleting `state.toml` is safe; it only restarts interval chains.
-Two files describe one cue list, and the config remains the source of truth for
-everything but `anchor`.
+The same sidecar pins a one-shot to the one occurrence it is armed for. Without
+that, restarting the app would re-arm a shot whose time had passed. Re-enabling
+a spent cue clears its entry and arms the next occurrence.
+
+_Consequences_: deleting `state.toml` is safe; interval chains restart, spent
+one-shots become armable again, and nothing in `cues.toml` is lost. Two files
+describe one cue list, and the config remains the source of truth for everything
+but the anchors.

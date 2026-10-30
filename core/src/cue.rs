@@ -78,10 +78,17 @@ impl Cue {
         }
     }
 
+    /// True for a wall-clock cue that must consume exactly one occurrence.
+    pub fn is_one_shot(&self) -> bool {
+        matches!(self.schedule, Schedule::At(_)) && matches!(self.repeat, Repeat::Once)
+    }
+
     /// The first moment this Cue is due strictly after `after`.
     ///
     /// Interval cues are anchored: the chain does not re-phase because the app
-    /// was closed, it continues from where it stopped.
+    /// was closed, it continues from where it stopped. A one-shot is anchored to
+    /// the single occurrence it is armed for, so a restart cannot re-arm a shot
+    /// that has already passed.
     pub fn next_fire(&self, after: DateTime<Local>) -> Option<DateTime<Local>> {
         match self.schedule {
             Schedule::Every(period) => {
@@ -92,35 +99,61 @@ impl Cue {
                 let elapsed = (after - anchor).num_milliseconds();
                 let step = period.num_milliseconds();
                 let n = if elapsed < 0 { 1 } else { elapsed / step + 1 };
-                let mut candidate = anchor + Duration::milliseconds(n * step);
+                let candidate =
+                    anchor.checked_add_signed(Duration::milliseconds(n.checked_mul(step)?))?;
+
+                if self.repeats_on(candidate.weekday()) {
+                    return Some(candidate);
+                }
 
                 // A weekday-only interval has to skip the weekend, or Sunday
-                // afternoon gets a "DEEP DIVE" card.
-                let limit = (10_080 / period.num_minutes().max(1)) as usize + 4;
-                for _ in 0..limit {
-                    if self.repeats_on(candidate.weekday()) {
-                        return Some(candidate);
+                // afternoon gets a "DEEP DIVE" card. Jump by whole days instead
+                // of stepping the interval, so a one-second interval does not
+                // have to walk two days of ticks to find Monday.
+                let time = candidate.time();
+                let mut date = candidate.date_naive();
+                for _ in 0..8 {
+                    date = date.succ_opt()?;
+                    let Some(next) = local(date.and_time(time)) else {
+                        continue;
+                    };
+                    if next > after && self.repeats_on(next.weekday()) {
+                        return Some(next);
                     }
-                    candidate += period;
                 }
                 None
             }
             Schedule::At(time) => {
+                // A one-shot is pinned to the occurrence it was armed for.
+                if let Some(armed) = self.anchor {
+                    return (armed > after).then_some(armed);
+                }
+
                 let mut date = after.date_naive();
 
-                // A one-shot belongs to the day it is armed: if its moment has
-                // already gone, it has no next fire rather than firing tomorrow.
+                // Before it has been armed, a one-shot means the next occurrence
+                // of its wall-clock time.
                 if matches!(self.repeat, Repeat::Once) {
-                    let candidate = local(date.and_time(time))?;
-                    return (candidate > after).then_some(candidate);
+                    for _ in 0..=1 {
+                        if let Some(candidate) = local(date.and_time(time)) {
+                            if candidate > after {
+                                return Some(candidate);
+                            }
+                        }
+                        date = date.succ_opt()?;
+                    }
+                    return None;
                 }
 
                 // never scan more than a couple of weeks; a Weekly cue with no
-                // listed days would otherwise loop forever
+                // listed days would otherwise loop forever. A wall-clock time
+                // that does not exist (the spring-forward gap) is skipped rather
+                // than aborting the whole search.
                 for _ in 0..15 {
-                    let candidate = local(date.and_time(time))?;
-                    if candidate > after && self.repeats_on(candidate.weekday()) {
-                        return Some(candidate);
+                    if let Some(candidate) = local(date.and_time(time)) {
+                        if candidate > after && self.repeats_on(candidate.weekday()) {
+                            return Some(candidate);
+                        }
                     }
                     date = date.succ_opt()?;
                 }
@@ -216,9 +249,38 @@ mod tests {
 
     #[test]
     fn a_one_shot_in_the_past_has_no_next_fire() {
-        let cue = Cue::at("ONCE", hm(9, 0));
+        let mut cue = Cue::at("ONCE", hm(9, 0));
+        cue.anchor = Some(local_at(2026, 3, 10, 9, 0));
         let after = local_at(2026, 3, 10, 10, 0);
         assert_eq!(cue.next_fire(after), None);
+    }
+
+    #[test]
+    fn an_unarmed_one_shot_takes_the_next_occurrence() {
+        let cue = Cue::at("ONCE", hm(9, 0));
+        let after = local_at(2026, 3, 10, 10, 0);
+        let next = cue.next_fire(after).unwrap();
+        assert_eq!(
+            next.day(),
+            11,
+            "10:00 has passed, so the shot is armed for tomorrow"
+        );
+        assert_eq!((next.hour(), next.minute()), (9, 0));
+    }
+
+    #[test]
+    fn a_fired_one_shot_is_not_re_armed_by_a_restart() {
+        let mut cue = Cue::at("ONCE", hm(9, 0));
+        cue.anchor = Some(local_at(2026, 3, 10, 9, 0));
+        // Still later the same day, and again a day later: the shot is spent.
+        assert_eq!(cue.next_fire(local_at(2026, 3, 10, 10, 0)), None);
+        assert_eq!(cue.next_fire(local_at(2026, 3, 11, 8, 0)), None);
+    }
+
+    #[test]
+    fn intervals_are_never_one_shot() {
+        assert!(!Cue::every("FOCUS", Duration::minutes(25)).is_one_shot());
+        assert!(Cue::at("ONCE", hm(9, 0)).is_one_shot());
     }
 
     #[test]
@@ -251,6 +313,11 @@ mod tests {
         let after = local_at(2026, 3, 13, 23, 50);
         let next = cue.next_fire(after).unwrap();
         assert_eq!(next.weekday(), Weekday::Mon);
+        assert_eq!(
+            (next.hour(), next.minute()),
+            (0, 15),
+            "the jump keeps the chain's time of day instead of snapping to midnight"
+        );
     }
 
     #[test]
@@ -271,9 +338,14 @@ mod tests {
 
         assert_eq!(
             should_fire(grace, due, due + Duration::minutes(9)),
-            Fire::Late { by: Duration::minutes(9) }
+            Fire::Late {
+                by: Duration::minutes(9)
+            }
         );
-        assert_eq!(should_fire(grace, due, due + Duration::minutes(11)), Fire::Skip);
+        assert_eq!(
+            should_fire(grace, due, due + Duration::minutes(11)),
+            Fire::Skip
+        );
     }
 
     #[test]
@@ -290,6 +362,9 @@ mod tests {
     fn nothing_fires_before_it_is_due() {
         let due = local_at(2026, 3, 10, 18, 0);
         let now = due - Duration::minutes(1);
-        assert_eq!(should_fire(LatePolicy::NextOpportunity, due, now), Fire::Skip);
+        assert_eq!(
+            should_fire(LatePolicy::NextOpportunity, due, now),
+            Fire::Skip
+        );
     }
 }

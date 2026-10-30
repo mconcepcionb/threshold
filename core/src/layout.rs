@@ -23,7 +23,12 @@ pub struct WrapSpec {
 impl WrapSpec {
     /// 1920×1080 defaults from docs/design.md.
     pub fn hd() -> Self {
-        WrapSpec { max_width_fraction: 0.84, max_px: 280.0, min_px: 110.0, tracking_em: -0.02 }
+        WrapSpec {
+            max_width_fraction: 0.84,
+            max_px: 280.0,
+            min_px: 110.0,
+            tracking_em: -0.02,
+        }
     }
 }
 
@@ -57,14 +62,22 @@ impl Font {
     pub fn width(&self, text: &str, size_px: f32, tracking_em: f32) -> f32 {
         let face = self.face();
         let upem = face.units_per_em().max(1) as f32;
+        // A missing glyph would measure zero and let the browser render the
+        // fallback far wider than the frame. Use the font's own M as a stand-in.
+        let fallback = face
+            .glyph_index('M')
+            .and_then(|g| face.glyph_hor_advance(g))
+            .unwrap_or((upem * 0.6) as u16);
         let mut advance = 0f32;
         for ch in text.chars() {
-            if let Some(glyph) = face.glyph_index(ch) {
-                advance += face.glyph_hor_advance(glyph).unwrap_or(0) as f32;
-            }
+            let width = face
+                .glyph_index(ch)
+                .and_then(|glyph| face.glyph_hor_advance(glyph))
+                .unwrap_or(fallback);
+            advance += width as f32;
         }
         let glyphs = text.chars().count() as f32;
-        advance / upem * size_px + tracking_em * size_px * glyphs
+        (advance / upem * size_px + tracking_em * size_px * glyphs).max(0.0)
     }
 }
 
@@ -75,16 +88,26 @@ impl Font {
 /// short word never sits alone on a line while its neighbour takes the rest.
 pub fn wrap(font: &Font, text: &str, viewport_width: f32, spec: &WrapSpec) -> Layout {
     let max_width = viewport_width * spec.max_width_fraction;
-    let manual: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let manual: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
 
     let lines: Vec<Vec<String>> = if manual.len() > 1 || text.contains('\n') {
-        manual.iter().map(|l| l.split_whitespace().map(str::to_string).collect()).collect()
+        manual
+            .iter()
+            .map(|l| l.split_whitespace().map(str::to_string).collect())
+            .collect()
     } else {
         let words: Vec<String> = text.split_whitespace().map(str::to_string).collect();
         if words.is_empty() {
-            return Layout { lines: vec![String::new()], size_px: spec.max_px };
+            return Layout {
+                lines: vec![String::new()],
+                size_px: spec.max_px,
+            };
         }
-        let target = ((words.len() + 1) / 2).clamp(1, 3);
+        let target = words.len().div_ceil(2).clamp(1, 3);
         break_lines(font, &words, target, spec.tracking_em)
     };
 
@@ -94,10 +117,21 @@ pub fn wrap(font: &Font, text: &str, viewport_width: f32, spec: &WrapSpec) -> La
         .fold(0f32, f32::max)
         .max(f32::EPSILON);
 
+    // Fill the frame with the widest line. `min_px` is the preferred floor; a
+    // single unbreakable word has to go below it, because overflowing the frame
+    // is the one outcome this module exists to prevent.
+    const HARD_MIN_PX: f32 = 24.0;
     let fitted = max_width / widest;
-    let size_px = fitted.clamp(spec.min_px.min(spec.max_px), spec.max_px);
+    let size_px = if fitted >= spec.min_px {
+        fitted.min(spec.max_px)
+    } else {
+        fitted.clamp(HARD_MIN_PX, spec.max_px)
+    };
 
-    Layout { lines: lines.into_iter().map(|l| l.join(" ")).collect(), size_px }
+    Layout {
+        lines: lines.into_iter().map(|l| l.join(" ")).collect(),
+        size_px,
+    }
 }
 
 fn break_lines(font: &Font, words: &[String], k: usize, tracking_em: f32) -> Vec<Vec<String>> {
@@ -107,7 +141,10 @@ fn break_lines(font: &Font, words: &[String], k: usize, tracking_em: f32) -> Vec
     }
 
     // all widths at a reference size of 1px, so scoring is size-independent
-    let word_w: Vec<f32> = words.iter().map(|w| font.width(w, 1.0, tracking_em)).collect();
+    let word_w: Vec<f32> = words
+        .iter()
+        .map(|w| font.width(w, 1.0, tracking_em))
+        .collect();
     let space_w = font.width(" ", 1.0, 0.0) - font.width("", 1.0, 0.0);
 
     let mut best: Option<(f32, Vec<usize>)> = None;
@@ -194,7 +231,11 @@ mod tests {
     fn a_single_word_fills_the_frame() {
         let l = layout("WAREHOUSE");
         assert_eq!(l.lines, vec!["WAREHOUSE"]);
-        assert!((l.size_px - 280.0).abs() < 0.5, "expected the cap, got {}", l.size_px);
+        assert!(
+            (l.size_px - 280.0).abs() < 0.5,
+            "expected the cap, got {}",
+            l.size_px
+        );
     }
 
     #[test]
@@ -213,19 +254,41 @@ mod tests {
     #[test]
     fn nothing_ever_exceeds_the_frame() {
         let f = font();
-        for text in [
+        let texts: Vec<String> = [
             "GO DRINK WATER",
             "WAREHOUSE",
             "CALL THE DENTIST BEFORE THEY CLOSE",
             "STAND UP\nSTRETCH\nLOOK AWAY",
             "A",
-        ] {
+            "LLAMA A JORGE",
+            "日本語のテキスト",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(std::iter::once("W".repeat(40)))
+        .collect();
+        for text in &texts {
             let l = wrap(&f, text, 1920.0, &WrapSpec::hd());
             for line in &l.lines {
                 let w = f.width(line, l.size_px, -0.02);
-                assert!(w <= 1920.0 * 0.84 + 1.0, "{text:?} line {line:?} is {w}px wide");
+                assert!(
+                    w <= 1920.0 * 0.84 + 1.0,
+                    "{text:?} line {line:?} is {w}px wide"
+                );
             }
         }
+    }
+
+    #[test]
+    fn a_forty_character_word_shrinks_below_the_preferred_floor() {
+        let l = layout(&"W".repeat(40));
+        assert_eq!(l.lines.len(), 1);
+        assert!(
+            l.size_px < 110.0,
+            "expected the type to go below the preferred floor, got {}",
+            l.size_px
+        );
+        assert!(l.size_px >= 24.0);
     }
 
     #[test]

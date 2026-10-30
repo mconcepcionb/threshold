@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a change to how Threshold behaves.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Threshold deliberately has a very small surface. A feature request is
+        strongest when it describes the moment in your day it fixes, not the
+        screen it adds.
+  - type: textarea
+    id: moment
+    attributes:
+      label: The moment
+      description: What are you doing when Threshold should do something different?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead

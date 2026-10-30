@@ -1,11 +1,13 @@
 //! Anchors: the only part of a Cue that changes while the app runs.
 //!
 //! An interval cue counts from its last fire, and that instant has to survive a
-//! restart. Keeping it in `cues.toml` would mean the app rewrites a file a human
-//! is allowed to edit every twenty-five minutes — which makes the file's mtime
+//! restart. A one-shot is pinned to the single occurrence it is armed for, and
+//! that also has to survive a restart so a shot that passed is not re-armed.
+//! Keeping either in `cues.toml` would mean the app rewrites a file a human is
+//! allowed to edit every twenty-five minutes — which makes the file's mtime
 //! meaningless, makes "changed on disk" prompt noise, and lets a scheduled write
-//! land on top of an unsaved editor buffer. So the anchors live beside the config
-//! in `state.toml`, keyed by what the cue *is* rather than its position: the text
+//! land on top of an unsaved editor buffer. So anchors live beside the config in
+//! `state.toml`, keyed by what the cue *is* rather than its position: the text
 //! and the schedule. Edit either and the chain starts over, which is the honest
 //! reading of "you changed the cue".
 //!
@@ -44,8 +46,12 @@ impl Anchors {
     }
 
     pub fn load(path: &Path) -> Anchors {
-        let Ok(text) = std::fs::read_to_string(path) else { return Anchors::default() };
-        let Ok(file) = toml::from_str::<StateFile>(&text) else { return Anchors::default() };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Anchors::default();
+        };
+        let Ok(file) = toml::from_str::<StateFile>(&text) else {
+            return Anchors::default();
+        };
 
         let mut keyed = HashMap::new();
         for entry in file.anchors {
@@ -60,12 +66,17 @@ impl Anchors {
         let mut entries: Vec<Entry> = self
             .keyed
             .iter()
-            .map(|(cue, at)| Entry { cue: cue.clone(), since: at.to_rfc3339() })
+            .map(|(cue, at)| Entry {
+                cue: cue.clone(),
+                since: at.to_rfc3339(),
+            })
             .collect();
         entries.sort_by(|a, b| a.cue.cmp(&b.cue));
 
-        let body = toml::to_string(&StateFile { anchors: entries }).map_err(std::io::Error::other)?;
-        let header = "# Written by Threshold. Safe to delete; interval cues restart.\n\n";
+        let body =
+            toml::to_string(&StateFile { anchors: entries }).map_err(std::io::Error::other)?;
+        let header =
+            "# Written by Threshold. Safe to delete; interval cues restart and spent one-shots re-arm.\n\n";
         write_atomic(path, &format!("{header}{body}"))
     }
 
@@ -73,17 +84,35 @@ impl Anchors {
         self.keyed.insert(Self::key(cue), at);
     }
 
+    pub fn forget(&mut self, cue: &Cue) {
+        self.keyed.remove(&Self::key(cue));
+    }
+
     pub fn get(&self, cue: &Cue) -> Option<DateTime<Local>> {
         self.keyed.get(&Self::key(cue)).copied()
     }
 
     /// Stamp the loaded anchors onto a cue list. Nothing is written.
+    ///
+    /// Interval cues use the anchor as the phase of their chain; a one-shot uses
+    /// it as the single occurrence it is armed for.
     pub fn apply(&self, cues: &mut [Cue]) {
         for cue in cues.iter_mut() {
-            if let Schedule::Every(_) = cue.schedule {
+            let applies = match cue.schedule {
+                Schedule::Every(_) => true,
+                Schedule::At(_) => cue.is_one_shot(),
+            };
+            if applies {
                 cue.anchor = self.get(cue);
             }
         }
+    }
+
+    /// Forget anchors for cues that no longer exist, so editing a list does not
+    /// leave an ever-growing sidecar behind.
+    pub fn prune(&mut self, cues: &[Cue]) {
+        let live: std::collections::HashSet<String> = cues.iter().map(Self::key).collect();
+        self.keyed.retain(|key, _| live.contains(key));
     }
 }
 
@@ -103,7 +132,10 @@ mod tests {
 
     fn path(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("threshold-state-{name}-{}.toml", std::process::id()));
+        p.push(format!(
+            "threshold-state-{name}-{}.toml",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }
@@ -168,5 +200,21 @@ mod tests {
         let mut anchors = Anchors::default();
         anchors.set(&b, Local::now());
         assert!(anchors.get(&a).is_some());
+    }
+
+    #[test]
+    fn a_one_shot_anchor_is_the_occurrence_it_is_armed_for() {
+        let p = path("oneshot");
+        let cue = Cue::at("ONCE", chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        let at = Local.with_ymd_and_hms(2026, 3, 10, 9, 0, 0).unwrap();
+
+        let mut anchors = Anchors::default();
+        anchors.set(&cue, at);
+        anchors.save(&p).unwrap();
+
+        let mut cues = vec![cue];
+        Anchors::load(&p).apply(&mut cues);
+        assert_eq!(cues[0].anchor, Some(at));
+        std::fs::remove_file(&p).unwrap();
     }
 }

@@ -1,0 +1,70 @@
+name: Bug report
+description: Something fired wrong, did not fire, or would not go away.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If this is a security problem, do not file it
+        here — see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Threshold version
+      description: Shown in the release name or the installer filename.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Linux (X11)
+        - Linux (Wayland)
+    validations:
+      required: true
+  - type: dropdown
+    id: overlay
+    attributes:
+      label: Overlay mode
+      description: The `overlay` setting in cues.toml, or the settings header.
+      options:
+        - auto
+        - permanent
+        - on_demand
+        - not sure
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Set a cue to ...
+        2. Wait until ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Crash log or console output
+      description: A `crash-*.log` beside cues.toml, or the output of `npm run tauri dev`.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked that this is not the known limitation for Wayland or a locked screen.
+        - label: This report contains no cue text I want to keep private.

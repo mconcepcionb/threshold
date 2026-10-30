@@ -2,6 +2,8 @@
 name = "threshold"
 version = "0.1.0"
 description = "A desktop app that interrupts your day with a card and a thump"
+license = "MIT"
+repository = "https://github.com/mconcepcionb/threshold"
 default-run = "threshold"
 edition = "2021"
 rust-version = "1.77"
@@ -14,7 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"

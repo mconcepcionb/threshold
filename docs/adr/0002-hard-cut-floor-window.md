@@ -13,9 +13,9 @@ That hardness needs a contract for dismissal, so a Card has two phases:
 - **Floor** (global, 600ms): guaranteed visible. Input passes through the overlay
   and cannot dismiss it. This guarantees the punch is never swallowed by a
   keystroke already in flight.
-- **Window** (per cue, default 4s): counted from the cut. After the Floor any
-  interaction dismisses immediately; if nothing happens, the Card leaves at the
-  end of the Window.
+- **Window** (per cue, default 4s): counted from the cut. After the Floor a
+  keypress or mouse-button press dismisses immediately; if nothing happens, the
+  Card leaves at the end of the Window.
 
 _Consequences_: a Card is a full-screen frame with no transition, so the audio
 carries the entrance; a Card with a bad sting reads as a rendering glitch. The

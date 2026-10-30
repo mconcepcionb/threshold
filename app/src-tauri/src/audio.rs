@@ -18,7 +18,9 @@ use std::io::Write;
 struct Rng(u32);
 
 impl Rng {
-    fn new(seed: u32) -> Self { Rng(seed | 1) }
+    fn new(seed: u32) -> Self {
+        Rng(seed | 1)
+    }
     fn next(&mut self) -> f32 {
         let mut x = self.0;
         x ^= x << 13;
@@ -30,7 +32,10 @@ impl Rng {
 }
 
 /// One-pole low-pass, used for the noise bed and comb damping.
-struct Lowpass { z: f32, a: f32 }
+struct Lowpass {
+    z: f32,
+    a: f32,
+}
 
 impl Lowpass {
     fn new(freq: f32, sr: f32) -> Self {
@@ -43,11 +48,23 @@ impl Lowpass {
     }
 }
 
-struct Comb { buf: Vec<f32>, i: usize, feedback: f32, damp: f32, store: f32 }
+struct Comb {
+    buf: Vec<f32>,
+    i: usize,
+    feedback: f32,
+    damp: f32,
+    store: f32,
+}
 
 impl Comb {
     fn new(delay: usize, feedback: f32, damp: f32) -> Self {
-        Comb { buf: vec![0.0; delay], i: 0, feedback, damp, store: 0.0 }
+        Comb {
+            buf: vec![0.0; delay],
+            i: 0,
+            feedback,
+            damp,
+            store: 0.0,
+        }
     }
     fn process(&mut self, x: f32) -> f32 {
         let out = self.buf[self.i];
@@ -58,10 +75,20 @@ impl Comb {
     }
 }
 
-struct Allpass { buf: Vec<f32>, i: usize, g: f32 }
+struct Allpass {
+    buf: Vec<f32>,
+    i: usize,
+    g: f32,
+}
 
 impl Allpass {
-    fn new(delay: usize, g: f32) -> Self { Allpass { buf: vec![0.0; delay], i: 0, g } }
+    fn new(delay: usize, g: f32) -> Self {
+        Allpass {
+            buf: vec![0.0; delay.max(1)],
+            i: 0,
+            g,
+        }
+    }
     fn process(&mut self, x: f32) -> f32 {
         let buffered = self.buf[self.i];
         let out = -x + buffered;
@@ -74,8 +101,10 @@ impl Allpass {
 /// Freeverb-style stereo tail: eight damped combs into two allpasses per side.
 /// Four combs ring metallically; eight with damping reads as a room.
 struct Reverb {
-    combs_l: Vec<Comb>, combs_r: Vec<Comb>,
-    ap_l: Vec<Allpass>, ap_r: Vec<Allpass>,
+    combs_l: Vec<Comb>,
+    combs_r: Vec<Comb>,
+    ap_l: Vec<Allpass>,
+    ap_r: Vec<Allpass>,
 }
 
 impl Reverb {
@@ -84,17 +113,28 @@ impl Reverb {
         const APS: [usize; 2] = [225, 556];
         let scale = sr / 44100.0;
         let mk = |offset: usize| -> (Vec<Comb>, Vec<Allpass>) {
-            let combs = DELAYS.iter().map(|&d| {
-                let d = ((d + offset) as f32 * scale) as usize;
-                let feedback = 10f32.powf(-3.0 * d as f32 / (t60 * sr));
-                Comb::new(d.max(1), feedback.min(0.985), 0.42)
-            }).collect();
-            let aps = APS.iter().map(|&d| Allpass::new(((d + offset) as f32 * scale) as usize, 0.5)).collect();
+            let combs = DELAYS
+                .iter()
+                .map(|&d| {
+                    let d = ((d + offset) as f32 * scale) as usize;
+                    let feedback = 10f32.powf(-3.0 * d as f32 / (t60 * sr));
+                    Comb::new(d.max(1), feedback.min(0.985), 0.42)
+                })
+                .collect();
+            let aps = APS
+                .iter()
+                .map(|&d| Allpass::new(((d + offset) as f32 * scale) as usize, 0.5))
+                .collect();
             (combs, aps)
         };
         let (combs_l, ap_l) = mk(0);
         let (combs_r, ap_r) = mk(23);
-        Reverb { combs_l, combs_r, ap_l, ap_r }
+        Reverb {
+            combs_l,
+            combs_r,
+            ap_l,
+            ap_r,
+        }
     }
 
     fn process(&mut self, x: f32) -> (f32, f32) {
@@ -125,7 +165,16 @@ pub struct Params {
 }
 
 impl Default for Params {
-    fn default() -> Self { Params { sr: 48_000.0, semitones: 0.0, t60: 2.6, tail: 3.2, depth: 1.8, hit: 2 } }
+    fn default() -> Self {
+        Params {
+            sr: 48_000.0,
+            semitones: 0.0,
+            t60: 2.6,
+            tail: 3.2,
+            depth: 1.8,
+            hit: 2,
+        }
+    }
 }
 
 #[allow(dead_code)] // peak is kept for offline level checks
@@ -134,13 +183,40 @@ pub struct Sting {
     pub peak: f32,
 }
 
+#[allow(clippy::needless_range_loop)] // the index is the sample clock, not a slice cursor
 pub fn render(p: &Params) -> Sting {
-    let sr = p.sr;
+    // The tuner and the config are allowed to hand this bad numbers; audio must
+    // never emit NaN, which can reach the device as full-scale noise.
+    let sr = if p.sr.is_finite() && (8_000.0..=192_000.0).contains(&p.sr) {
+        p.sr
+    } else {
+        48_000.0
+    };
+    let semitones = if p.semitones.is_finite() {
+        p.semitones.clamp(-24.0, 24.0)
+    } else {
+        0.0
+    };
+    let depth = if p.depth.is_finite() {
+        p.depth.clamp(0.0, 4.0)
+    } else {
+        1.8
+    };
+    let t60 = if p.t60.is_finite() {
+        p.t60.clamp(0.1, 20.0)
+    } else {
+        2.6
+    };
+    let tail = if p.tail.is_finite() {
+        p.tail.clamp(0.1, 20.0)
+    } else {
+        3.2
+    };
     let body_len = (0.9 * sr) as usize;
-    let total = body_len + (p.tail * sr) as usize;
+    let total = body_len + (tail * sr) as usize;
     let mut dry = vec![0f32; total];
 
-    let bend = 2f32.powf(p.semitones / 12.0);
+    let bend = 2f32.powf(semitones / 12.0);
     let mut rng = Rng::new(0x5EED_1234);
 
     // A thump is mostly noise; a bell is a few partials. The two failed versions
@@ -189,7 +265,9 @@ pub fn render(p: &Params) -> Sting {
             let t = i as f32 / sr;
             let f = f_lo + (f_hi - f_lo) * (-t / sweep_tau).exp();
             phase += TAU * f / sr;
-            if phase > TAU { phase -= TAU; }
+            if phase > TAU {
+                phase -= TAU;
+            }
             let env = (t / 0.0015).min(1.0) * (-t / body_tau).exp();
             dry[i] += (phase.sin() * 2.4).tanh() * env * 0.9;
         }
@@ -204,7 +282,9 @@ pub fn render(p: &Params) -> Sting {
         for i in 0..n {
             let t = i as f32 / sr;
             phase += TAU * freq * bend / sr;
-            if phase > TAU { phase -= TAU; }
+            if phase > TAU {
+                phase -= TAU;
+            }
             let env = (t / 0.0012).min(1.0) * (-t / tau).exp();
             dry[i] += (phase.sin() * 1.6).tanh() * env * amp / 1.6f32.tanh();
         }
@@ -216,9 +296,11 @@ pub fn render(p: &Params) -> Sting {
         for i in 0..body_len {
             let t = i as f32 / sr;
             phase += TAU * 46.0 * bend / sr;
-            if phase > TAU { phase -= TAU; }
-            let env = (t / 0.010).min(1.0) * (-t / (0.28 + 0.16 * p.depth)).exp();
-            dry[i] += phase.sin() * env * 0.5 * p.depth;
+            if phase > TAU {
+                phase -= TAU;
+            }
+            let env = (t / 0.010).min(1.0) * (-t / (0.28 + 0.16 * depth)).exp();
+            dry[i] += phase.sin() * env * 0.5 * depth;
         }
     }
 
@@ -230,9 +312,11 @@ pub fn render(p: &Params) -> Sting {
         for i in 0..body_len {
             let t = i as f32 / sr;
             phase += TAU * 31.0 * bend / sr;
-            if phase > TAU { phase -= TAU; }
+            if phase > TAU {
+                phase -= TAU;
+            }
             let env = (t / 0.060).min(1.0) * (-t / 0.62).exp();
-            dry[i] += phase.sin() * env * 0.44 * p.depth;
+            dry[i] += phase.sin() * env * 0.44 * depth;
         }
     }
 
@@ -248,15 +332,15 @@ pub fn render(p: &Params) -> Sting {
     // Two bands, because lows decay slower in a real room. Sending everything
     // through one reverb t60 makes the tail share the body's character; a longer
     // low band is what puts weight *behind* the hit instead of beside it.
-    let low_verb_t60 = p.t60 * 1.7;
+    let low_verb_t60 = t60 * 1.7;
     let mut verb_low = Reverb::new(low_verb_t60, sr);
-    let mut verb_high = Reverb::new(p.t60, sr);
-    let in_cut_freq = (1500.0 - 350.0 * (p.depth - 1.0).max(0.0)).max(650.0);
+    let mut verb_high = Reverb::new(t60, sr);
+    let in_cut_freq = (1500.0 - 350.0 * (depth - 1.0).max(0.0)).max(650.0);
     let mut in_cut = Lowpass::new(in_cut_freq, sr);
     let mut low_split = Lowpass::new(220.0, sr);
     let mut wet_cut_l = Lowpass::new(2400.0, sr);
     let mut wet_cut_r = Lowpass::new(2400.0, sr);
-    let low_gain = (0.42 + 0.22 * (p.depth - 1.0).max(0.0)).min(0.9);
+    let low_gain = (0.42 + 0.22 * (depth - 1.0).max(0.0)).min(0.9);
     let high_gain = 0.34;
     let mut stereo = Vec::with_capacity(total);
     let mut peak = 0f32;
@@ -293,7 +377,10 @@ pub fn render(p: &Params) -> Sting {
     let target = 0.891;
     if peak > 0.0 {
         let g = target / peak;
-        for (l, r) in stereo.iter_mut() { *l *= g; *r *= g; }
+        for (l, r) in stereo.iter_mut() {
+            *l *= g;
+            *r *= g;
+        }
         peak = target;
     }
 
@@ -314,12 +401,12 @@ pub fn write_wav(path: &str, frames: &[(f32, f32)], sr: f32) -> std::io::Result<
     f.write_all(&(36 + data_len).to_le_bytes())?;
     f.write_all(b"WAVEfmt ")?;
     f.write_all(&16u32.to_le_bytes())?;
-    f.write_all(&1u16.to_le_bytes())?;          // PCM
-    f.write_all(&2u16.to_le_bytes())?;          // stereo
+    f.write_all(&1u16.to_le_bytes())?; // PCM
+    f.write_all(&2u16.to_le_bytes())?; // stereo
     f.write_all(&(sr as u32).to_le_bytes())?;
     f.write_all(&byte_rate.to_le_bytes())?;
-    f.write_all(&4u16.to_le_bytes())?;          // block align
-    f.write_all(&16u16.to_le_bytes())?;         // bits
+    f.write_all(&4u16.to_le_bytes())?; // block align
+    f.write_all(&16u16.to_le_bytes())?; // bits
     f.write_all(b"data")?;
     f.write_all(&data_len.to_le_bytes())?;
     for (l, r) in frames {
@@ -346,13 +433,15 @@ pub fn play(frames: Vec<(f32, f32)>, sr: f32) -> Result<(), Box<dyn std::error::
     } else {
         let ratio = sr / out_rate;
         let n = (frames.len() as f32 / ratio) as usize;
-        (0..n).map(|i| {
-            let x = i as f32 * ratio;
-            let a = frames[(x as usize).min(frames.len() - 1)];
-            let b = frames[(x as usize + 1).min(frames.len() - 1)];
-            let t = x.fract();
-            (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
-        }).collect()
+        (0..n)
+            .map(|i| {
+                let x = i as f32 * ratio;
+                let a = frames[(x as usize).min(frames.len() - 1)];
+                let b = frames[(x as usize + 1).min(frames.len() - 1)];
+                let t = x.fract();
+                (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            })
+            .collect()
     };
 
     let mut i = 0usize;
@@ -362,8 +451,12 @@ pub fn play(frames: Vec<(f32, f32)>, sr: f32) -> Result<(), Box<dyn std::error::
             move |data: &mut [f32], _| {
                 for frame in data.chunks_mut(channels) {
                     let (l, r) = src.get(i).copied().unwrap_or((0.0, 0.0));
-                    if channels >= 2 { frame[0] = l; frame[1] = r; }
-                    else if channels == 1 { frame[0] = (l + r) * 0.5; }
+                    if channels >= 2 {
+                        frame[0] = l;
+                        frame[1] = r;
+                    } else if channels == 1 {
+                        frame[0] = (l + r) * 0.5;
+                    }
                     i += 1;
                 }
             },
@@ -400,11 +493,17 @@ pub fn play(frames: Vec<(f32, f32)>, sr: f32) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-
 impl Params {
     /// The voice settled on in the spike: the sweep hit over the deep tail.
     pub fn chosen() -> Self {
-        Params { sr: 48_000.0, semitones: 0.0, t60: 2.6, tail: 3.2, depth: 1.8, hit: 2 }
+        Params {
+            sr: 48_000.0,
+            semitones: 0.0,
+            t60: 2.6,
+            tail: 3.2,
+            depth: 1.8,
+            hit: 2,
+        }
     }
 
     pub fn at_semitone(mut self, semitones: f32) -> Self {
@@ -417,11 +516,18 @@ impl Params {
 /// the sound starts.
 pub fn fire(semitones: f32, volume: f32) {
     let params = Params::chosen().at_semitone(semitones);
-    let gain = volume.clamp(0.0, 1.0);
+    let gain = if volume.is_finite() {
+        volume.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
     std::thread::spawn(move || {
         let sting = render(&params);
-        let scaled: Vec<(f32, f32)> =
-            sting.stereo.iter().map(|(l, r)| (l * gain, r * gain)).collect();
+        let scaled: Vec<(f32, f32)> = sting
+            .stereo
+            .iter()
+            .map(|(l, r)| (l * gain, r * gain))
+            .collect();
         if let Err(e) = play(scaled, params.sr) {
             eprintln!("threshold: could not play the sting: {e}");
         }
@@ -433,7 +539,9 @@ mod tests {
     use super::*;
 
     fn peak(frames: &[(f32, f32)]) -> f32 {
-        frames.iter().fold(0f32, |m, (l, r)| m.max(l.abs()).max(r.abs()))
+        frames
+            .iter()
+            .fold(0f32, |m, (l, r)| m.max(l.abs()).max(r.abs()))
     }
 
     fn rms(frames: &[(f32, f32)]) -> f32 {
@@ -453,6 +561,25 @@ mod tests {
             "the last millisecond is still at {:.4} — that is the click",
             peak(last_ms)
         );
+    }
+
+    #[test]
+    fn non_finite_parameters_never_reach_the_device_as_nan() {
+        let mut params = Params::chosen();
+        params.semitones = f32::NAN;
+        params.depth = f32::INFINITY;
+        params.t60 = f32::NAN;
+        params.tail = f32::NEG_INFINITY;
+        let sting = render(&params);
+        assert!(!sting.stereo.is_empty());
+        assert!(
+            sting
+                .stereo
+                .iter()
+                .all(|(l, r)| l.is_finite() && r.is_finite()),
+            "a bad parameter produced a non-finite sample"
+        );
+        assert!(sting.peak.is_finite() && sting.peak > 0.0);
     }
 
     #[test]

@@ -1,0 +1,67 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            bundles: msi,nsis
+          - name: linux
+            os: ubuntu-22.04
+            bundles: deb,appimage
+          - name: macos
+            os: macos-latest
+            bundles: app,dmg
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev libasound2-dev libssl-dev
+      - run: npm ci
+        working-directory: app
+      - run: node scripts/check-versions.mjs
+      - run: cargo test --locked --manifest-path core/Cargo.toml
+      - run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: "Threshold ${{ github.ref_name }}"
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          args: --bundles ${{ matrix.bundles }}
+          releaseBody: |
+            Threshold ${{ github.ref_name }} — public alpha.
+
+            **Windows is the supported target.** macOS and Linux installers are
+            provided as best-effort builds and are not signed or notarized:
+            Windows SmartScreen and macOS Gatekeeper will warn. There is no
+            auto-update; download and install the new build to upgrade.
+
+            The escape hatch is **Ctrl+Alt+Shift+Q**. It clears any card,
+            returns input, and pauses firing for an hour.
+
+            See CHANGELOG.md in the repository for what changed.

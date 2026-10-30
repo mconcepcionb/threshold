@@ -6,8 +6,9 @@
 //! detected before anything is overwritten, and a parse error never discards a
 //! config that was loading fine a second ago.
 //!
-//! The on-disk form is deliberately forgiving: two required fields per Cue, five
-//! optional, and defaults that mean a hand-written cue is two lines.
+//! The on-disk form is deliberately forgiving: two required fields per Cue, six
+//! optional ones (`repeat`, `late`, `seconds`, `sting`, `enabled`, and the
+//! internal `anchor`), with defaults that mean a hand-written cue is two lines.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -62,6 +63,10 @@ impl OverlayMode {
 }
 pub const DEFAULT_FLOOR_MS: u32 = 600;
 pub const MAX_TEXT_CHARS: usize = 40;
+/// The UI and the starter file agree on this range; the model enforces it.
+pub const MAX_SEMITONES: f32 = 6.0;
+const MAX_INTERVAL_SECS: i64 = 30 * 24 * 60 * 60;
+const MAX_GRACE_SECS: i64 = 7 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -86,7 +91,10 @@ impl Default for Config {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("could not read {path}: {source}")]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("{path} is not valid TOML: {message}")]
     Toml { path: PathBuf, message: String },
     #[error("cue {index}: {message}")]
@@ -193,13 +201,10 @@ impl Config {
         let mut added = 0;
         for cue in starter.cues {
             let draft = CueDraft::from_cue(&cue);
-            let present = self
-                .cues
-                .iter()
-                .any(|c| {
-                    let existing = CueDraft::from_cue(c);
-                    existing.text == draft.text && existing.at == draft.at
-                });
+            let present = self.cues.iter().any(|c| {
+                let existing = CueDraft::from_cue(c);
+                existing.text == draft.text && existing.at == draft.at
+            });
             if !present {
                 self.cues.push(cue);
                 added += 1;
@@ -215,26 +220,45 @@ impl Config {
     /// Parse a whole file. `index` in an error is the cue's position, 1-based,
     /// so it points at the `[[cue]]` block a human can find.
     pub fn parse(path: &Path, text: &str) -> Result<Config, ConfigError> {
+        // Read the version before the strict struct: a newer file that added a
+        // field should report "this build is too old", not "unknown field".
+        let raw: toml::Value = toml::from_str(text).map_err(|e| ConfigError::Toml {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        if let Some(found) = raw.get("version").and_then(|v| v.as_integer()) {
+            if found > FORMAT_VERSION as i64 {
+                return Err(ConfigError::Version {
+                    found: found as u32,
+                    ours: FORMAT_VERSION,
+                });
+            }
+        }
+
         let file: ConfigFile = toml::from_str(text).map_err(|e| ConfigError::Toml {
             path: path.to_path_buf(),
-            message: e.message().to_string(),
+            message: e.to_string(),
         })?;
-
-        if file.version > FORMAT_VERSION {
-            return Err(ConfigError::Version { found: file.version, ours: FORMAT_VERSION });
-        }
 
         let mut cues = Vec::with_capacity(file.cues.len());
         for (i, raw) in file.cues.into_iter().enumerate() {
             let index = i + 1;
-            cues.push(raw.into_cue(index).map_err(|message| ConfigError::Cue { index, message })?);
+            cues.push(
+                raw.into_cue(index)
+                    .map_err(|message| ConfigError::Cue { index, message })?,
+            );
         }
 
         let overlay = match file.overlay.as_deref() {
             None => OverlayMode::Auto,
-            Some(s) => OverlayMode::parse(s).map_err(|message| ConfigError::Invalid(message))?,
+            Some(s) => OverlayMode::parse(s).map_err(ConfigError::Invalid)?,
         };
-        let config = Config { floor_ms: file.floor_ms, overlay, volume: file.volume, cues };
+        let config = Config {
+            floor_ms: file.floor_ms,
+            overlay,
+            volume: file.volume,
+            cues,
+        };
         config.validate()?;
         Ok(config)
     }
@@ -270,11 +294,15 @@ impl Config {
                 self.volume
             )));
         }
+        let mut seen = std::collections::HashSet::new();
         for (i, cue) in self.cues.iter().enumerate() {
             let n = i + 1;
             let chars = cue.text.chars().count();
             if cue.text.trim().is_empty() {
-                return Err(ConfigError::Cue { index: n, message: "text is empty".into() });
+                return Err(ConfigError::Cue {
+                    index: n,
+                    message: "text is empty".into(),
+                });
             }
             if chars > MAX_TEXT_CHARS {
                 return Err(ConfigError::Cue {
@@ -288,9 +316,52 @@ impl Config {
                     message: format!("seconds must be 1..=120, got {}", cue.seconds),
                 });
             }
+            if !cue.sting.is_finite() || cue.sting.abs() > MAX_SEMITONES {
+                return Err(ConfigError::Cue {
+                    index: n,
+                    message: format!(
+                        "sting must be a finite pitch offset in -{MAX_SEMITONES}..={MAX_SEMITONES}, got {}",
+                        cue.sting
+                    ),
+                });
+            }
+            validate_schedule(cue, n)?;
+            if !seen.insert(crate::state::Anchors::key(cue)) {
+                return Err(ConfigError::Cue {
+                    index: n,
+                    message: "another cue has the same text and schedule; give one of them a different time or text"
+                        .into(),
+                });
+            }
         }
         Ok(())
     }
+}
+
+fn validate_schedule(cue: &Cue, index: usize) -> Result<(), ConfigError> {
+    let fail = |message: String| ConfigError::Cue { index, message };
+    if let Schedule::Every(period) = cue.schedule {
+        if period <= Duration::zero() || period.num_seconds() > MAX_INTERVAL_SECS {
+            return Err(fail(format!(
+                "interval must be between 1 second and {} days, got {}",
+                MAX_INTERVAL_SECS / 86_400,
+                format_duration(period)
+            )));
+        }
+        if matches!(cue.repeat, Repeat::Weekly(ref days) if days.is_empty()) {
+            return Err(fail("weekly() needs at least one day".into()));
+        }
+    }
+    if let LatePolicy::CatchUp(grace) = cue.late {
+        if grace <= Duration::zero() || grace.num_seconds() > MAX_GRACE_SECS {
+            return Err(fail(format!(
+                "catch_up grace must be between 1 second and {} days, got {}",
+                MAX_GRACE_SECS / 86_400,
+                format_duration(grace)
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl CueFile {
@@ -370,17 +441,22 @@ fn format_schedule(schedule: &Schedule) -> String {
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
-    let (num, unit) = s.split_at(s.len().checked_sub(1).ok_or("empty duration")?);
+    let (num, unit) = s
+        .char_indices()
+        .next_back()
+        .ok_or_else(|| "duration is empty".to_string())?;
+    let num = &s[..num];
     let n: i64 = num
         .parse()
         .map_err(|_| format!("duration `{s}` must look like 30s, 25m or 2h"))?;
     if n <= 0 {
         return Err(format!("duration `{s}` must be positive"));
     }
+    let out_of_range = || format!("duration `{s}` is too large");
     match unit {
-        "s" => Ok(Duration::seconds(n)),
-        "m" => Ok(Duration::minutes(n)),
-        "h" => Ok(Duration::hours(n)),
+        's' => Duration::try_seconds(n).ok_or_else(out_of_range),
+        'm' => Duration::try_minutes(n).ok_or_else(out_of_range),
+        'h' => Duration::try_hours(n).ok_or_else(out_of_range),
         _ => Err(format!("duration `{s}` must end in s, m or h")),
     }
 }
@@ -495,7 +571,10 @@ struct Stamp {
 impl Stamp {
     fn of(path: &Path) -> Option<Stamp> {
         let meta = std::fs::metadata(path).ok()?;
-        Some(Stamp { modified: meta.modified().ok(), len: meta.len() })
+        Some(Stamp {
+            modified: meta.modified().ok(),
+            len: meta.len(),
+        })
     }
 }
 
@@ -515,10 +594,7 @@ impl Store {
     }
 
     /// Open, writing `seed` if the file does not exist yet.
-    pub fn open_with_seed(
-        path: impl Into<PathBuf>,
-        seed: Config,
-    ) -> Result<Store, ConfigError> {
+    pub fn open_with_seed(path: impl Into<PathBuf>, seed: Config) -> Result<Store, ConfigError> {
         let path = path.into();
         if !path.exists() {
             if let Some(dir) = path.parent() {
@@ -531,18 +607,41 @@ impl Store {
             let config = seed;
             write_atomic(&path, &text)?;
             let stamp = Stamp::of(&path);
-            return Ok(Store { path, config, stamp });
+            return Ok(Store {
+                path,
+                config,
+                stamp,
+            });
         }
 
-        let text = std::fs::read_to_string(&path)
-            .map_err(|source| ConfigError::Io { path: path.clone(), source })?;
+        let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Io {
+            path: path.clone(),
+            source,
+        })?;
         let config = Config::parse(&path, &text)?;
         let stamp = Stamp::of(&path);
-        Ok(Store { path, config, stamp })
+        Ok(Store {
+            path,
+            config,
+            stamp,
+        })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// A store that holds `config` in memory without touching the disk. Used
+    /// when the file cannot be read or written: the app still has a scheduler,
+    /// and the settings window can explain what happened.
+    pub fn from_config(path: impl Into<PathBuf>, config: Config) -> Store {
+        let path = path.into();
+        let stamp = Stamp::of(&path);
+        Store {
+            path,
+            config,
+            stamp,
+        }
     }
 
     pub fn config(&self) -> &Config {
@@ -556,8 +655,10 @@ impl Store {
     }
 
     pub fn reload(&mut self) -> Result<(), ConfigError> {
-        let text = std::fs::read_to_string(&self.path)
-            .map_err(|source| ConfigError::Io { path: self.path.clone(), source })?;
+        let text = std::fs::read_to_string(&self.path).map_err(|source| ConfigError::Io {
+            path: self.path.clone(),
+            source,
+        })?;
         self.config = Config::parse(&self.path, &text)?;
         self.stamp = Stamp::of(&self.path);
         Ok(())
@@ -574,8 +675,10 @@ impl Store {
 }
 
 fn write_atomic(path: &Path, text: &str) -> Result<(), ConfigError> {
-    crate::fsutil::write_atomic(path, text)
-        .map_err(|source| ConfigError::Io { path: path.to_path_buf(), source })
+    crate::fsutil::write_atomic(path, text).map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 // --- the shape a UI edits ------------------------------------------------
@@ -616,12 +719,39 @@ impl CueDraft {
     }
 
     pub fn to_cue(&self, id: u64) -> Result<Cue, String> {
+        let text = self.text.trim().to_string();
+        if text.is_empty() {
+            return Err("text is empty".into());
+        }
+        let chars = text.chars().count();
+        if chars > MAX_TEXT_CHARS {
+            return Err(format!(
+                "text is {chars} characters; the limit is {MAX_TEXT_CHARS}"
+            ));
+        }
+        if self.seconds == 0 || self.seconds > 120 {
+            return Err(format!("seconds must be 1..=120, got {}", self.seconds));
+        }
+        if !self.sting.is_finite() || self.sting.abs() > MAX_SEMITONES {
+            return Err(format!(
+                "sting must be a finite pitch offset in -{MAX_SEMITONES}..={MAX_SEMITONES}, got {}",
+                self.sting
+            ));
+        }
         Ok(Cue {
             id,
-            text: self.text.trim().to_string(),
+            text,
             schedule: parse_schedule(&self.at)?,
-            repeat: if self.repeat.is_empty() { Repeat::Once } else { parse_repeat(&self.repeat)? },
-            late: if self.late.is_empty() { LatePolicy::Exact } else { parse_late(&self.late)? },
+            repeat: if self.repeat.is_empty() {
+                Repeat::Once
+            } else {
+                parse_repeat(&self.repeat)?
+            },
+            late: if self.late.is_empty() {
+                LatePolicy::Exact
+            } else {
+                parse_late(&self.late)?
+            },
             seconds: self.seconds,
             sting: self.sting,
             enabled: self.enabled,
@@ -636,20 +766,25 @@ impl Config {
     }
 
     /// Replace the cue list from drafts, keeping the existing anchors where the
-    /// schedule is unchanged so an interval chain is not re-phased by an edit.
+    /// cue is unchanged so an interval chain is not re-phased by an edit.
+    /// Re-enabling a cue that was disarmed clears its anchor, which re-arms a
+    /// one-shot and starts an interval chain from now.
     pub fn from_drafts(&mut self, drafts: &[CueDraft]) -> Result<(), ConfigError> {
         let mut cues = Vec::with_capacity(drafts.len());
         for (i, draft) in drafts.iter().enumerate() {
             let index = i + 1;
-            let mut cue = draft.to_cue(index as u64).map_err(|message| ConfigError::Cue {
-                index,
-                message,
-            })?;
-            cue.anchor = self
-                .cues
-                .get(i)
-                .filter(|old| old.schedule == cue.schedule)
-                .and_then(|old| old.anchor);
+            let mut cue = draft
+                .to_cue(index as u64)
+                .map_err(|message| ConfigError::Cue { index, message })?;
+            let old = self.cues.get(i);
+            let same = old
+                .is_some_and(|o| crate::state::Anchors::key(o) == crate::state::Anchors::key(&cue));
+            let rearmed = old.is_some_and(|o| !o.enabled && cue.enabled);
+            cue.anchor = if same && !rearmed {
+                old.and_then(|o| o.anchor)
+            } else {
+                None
+            };
             cues.push(cue);
         }
         self.cues = cues;
@@ -707,8 +842,14 @@ enabled = false
 "#;
         let config = Config::parse(Path::new("cues.toml"), text).unwrap();
         assert_eq!(config.floor_ms, 800);
-        assert_eq!(config.cues[0].schedule, Schedule::Every(Duration::minutes(25)));
-        assert_eq!(config.cues[0].late, LatePolicy::CatchUp(Duration::minutes(10)));
+        assert_eq!(
+            config.cues[0].schedule,
+            Schedule::Every(Duration::minutes(25))
+        );
+        assert_eq!(
+            config.cues[0].late,
+            LatePolicy::CatchUp(Duration::minutes(10))
+        );
         assert_eq!(config.cues[0].repeat, Repeat::Weekdays);
         assert_eq!(config.cues[0].seconds, 6);
         assert_eq!(config.cues[0].sting, -3.0);
@@ -722,7 +863,10 @@ enabled = false
     fn weekly_days_round_trip() {
         let text = "[[cue]]\ntext = \"STANDUP\"\nat = \"09:30\"\nrepeat = \"weekly(tue,thu)\"\n";
         let config = Config::parse(Path::new("cues.toml"), text).unwrap();
-        assert_eq!(config.cues[0].repeat, Repeat::Weekly(vec![Weekday::Tue, Weekday::Thu]));
+        assert_eq!(
+            config.cues[0].repeat,
+            Repeat::Weekly(vec![Weekday::Tue, Weekday::Thu])
+        );
         let again = Config::parse(Path::new("cues.toml"), &config.to_toml().unwrap()).unwrap();
         assert_eq!(again.cues[0].repeat, config.cues[0].repeat);
     }
@@ -736,7 +880,10 @@ enabled = false
         .unwrap();
         let out = config.to_toml().unwrap();
         for field in ["repeat", "late", "seconds", "sting", "enabled", "anchor"] {
-            assert!(!out.contains(&format!("\n{field} =")), "{field} should be omitted:\n{out}");
+            assert!(
+                !out.contains(&format!("\n{field} =")),
+                "{field} should be omitted:\n{out}"
+            );
         }
     }
 
@@ -759,7 +906,10 @@ enabled = false
             "[[cue]]\ntext = \"X\"\nat = \"18:00\"\nsecond = 6\n",
         )
         .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("unknown field"), "{err}");
+        assert!(
+            err.to_string().to_lowercase().contains("unknown field"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -777,16 +927,20 @@ enabled = false
     fn store_creates_reads_and_saves() {
         let path = temp_path("store");
         let mut store = Store::open(&path).unwrap();
-        assert_eq!(store.config().cues.len(), 12, "a fresh config starts from the starter file");
+        assert_eq!(
+            store.config().cues.len(),
+            12,
+            "a fresh config starts from the starter file"
+        );
 
         let mut config = store.config().clone();
-        config.cues.push(Cue::at("REVIEW MAIL", hm(18, 0)));
+        config.cues.push(Cue::at("TEST CUE", hm(18, 0)));
         store.save(config).unwrap();
         assert!(!store.changed_on_disk());
 
         let reopened = Store::open(&path).unwrap();
         assert_eq!(reopened.config().cues.len(), 13);
-        assert_eq!(reopened.config().cues.last().unwrap().text, "REVIEW MAIL");
+        assert_eq!(reopened.config().cues.last().unwrap().text, "TEST CUE");
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -796,7 +950,7 @@ enabled = false
         let path = temp_path("drift");
         let mut store = Store::open(&path).unwrap();
         let mut config = store.config().clone();
-        config.cues.push(Cue::at("REVIEW MAIL", hm(18, 0)));
+        config.cues.push(Cue::at("TEST CUE", hm(18, 0)));
         store.save(config).unwrap();
 
         // someone else writes the file
@@ -806,9 +960,83 @@ enabled = false
         // and then breaks it: the in-memory config must survive
         std::fs::write(&path, "this is not toml").unwrap();
         assert!(store.reload().is_err());
-        assert_eq!(store.config().cues.last().unwrap().text, "REVIEW MAIL");
+        assert_eq!(store.config().cues.last().unwrap().text, "TEST CUE");
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_multibyte_duration_is_an_error_not_a_panic() {
+        for at in ["every 5é", "in 5µ", "every é"] {
+            let err = Config::parse(
+                Path::new("cues.toml"),
+                &format!("[[cue]]\ntext = \"X\"\nat = \"{at}\"\n"),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("cue 1"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_duration_is_an_error_not_a_panic() {
+        let err = Config::parse(
+            Path::new("cues.toml"),
+            "[[cue]]\ntext = \"X\"\nat = \"every 999999999999999999m\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("duration"), "{err}");
+    }
+
+    #[test]
+    fn a_newer_format_is_reported_before_unknown_fields() {
+        let err = Config::parse(
+            Path::new("cues.toml"),
+            "version = 2\nfuture_field = true\n[[cue]]\ntext = \"X\"\nat = \"18:00\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Version { found: 2, ours: 1 }),
+            "expected a version error, got {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_finite_pitch_is_rejected() {
+        let err = Config::parse(
+            Path::new("cues.toml"),
+            "[[cue]]\ntext = \"X\"\nat = \"18:00\"\nsting = nan\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("sting"), "{err}");
+    }
+
+    #[test]
+    fn two_identical_cues_are_rejected() {
+        let err = Config::parse(
+            Path::new("cues.toml"),
+            "[[cue]]\ntext = \"FOCUS\"\nat = \"every 25m\"\n\n[[cue]]\ntext = \"FOCUS\"\nat = \"every 25m\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("same text and schedule"), "{err}");
+    }
+
+    #[test]
+    fn re_enabling_a_spent_one_shot_clears_its_anchor() {
+        let mut config = Config::parse(
+            Path::new("cues.toml"),
+            "[[cue]]\ntext = \"ONCE\"\nat = \"09:00\"\n",
+        )
+        .unwrap();
+        config.cues[0].anchor = Some(Local::now());
+        config.cues[0].enabled = false;
+
+        let mut draft = CueDraft::from_cue(&config.cues[0]);
+        draft.enabled = true;
+        config.from_drafts(&[draft]).unwrap();
+        assert_eq!(
+            config.cues[0].anchor, None,
+            "re-arming starts a new occurrence"
+        );
     }
 }
 
@@ -837,7 +1065,10 @@ mod starter_tests {
 
         assert_eq!(config.merge_starter(), 11);
         assert_eq!(config.cues.len(), 12);
-        assert_eq!(config.cues[0].text, "WAREHOUSE", "the existing cue stays first");
+        assert_eq!(
+            config.cues[0].text, "WAREHOUSE",
+            "the existing cue stays first"
+        );
     }
 
     #[test]
@@ -864,16 +1095,25 @@ mod arrival_tests {
 
         assert_eq!(arrival.text, "YOU ARE HERE");
         assert_eq!(arrival.repeat, Repeat::Once);
-        let due = arrival.next_fire(now).expect("the arrival cue is due today");
+        let due = arrival
+            .next_fire(now)
+            .expect("the arrival cue is due today");
         let wait = due - now;
-        assert!(wait > Duration::zero() && wait <= Duration::seconds(100), "{wait:?}");
+        assert!(
+            wait > Duration::zero() && wait <= Duration::seconds(100),
+            "{wait:?}"
+        );
     }
 
     #[test]
     fn an_install_at_midnight_gets_examples_but_no_impossible_arrival() {
         let now = Local.with_ymd_and_hms(2026, 3, 10, 23, 59, 30).unwrap();
         let config = Config::starter_at(now);
-        assert_eq!(config.cues.len(), 12, "no arrival cue that would never fire");
+        assert_eq!(
+            config.cues.len(),
+            12,
+            "no arrival cue that would never fire"
+        );
         assert!(config.cues.iter().all(|c| c.text != "YOU ARE HERE"));
         assert!(config.validate().is_ok());
     }

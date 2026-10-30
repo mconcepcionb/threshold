@@ -5,7 +5,48 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  versions:
+    name: versions agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/check-versions.mjs
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --manifest-path core/Cargo.toml --check
+      - run: cargo fmt --manifest-path app/src-tauri/Cargo.toml --check
+
+  clippy-core:
+    name: clippy (core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+
   core:
     name: domain (${{ matrix.os }})
     strategy:
@@ -13,26 +54,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --manifest-path core/Cargo.toml
-      - run: cargo run --manifest-path core/Cargo.toml --bin next -- examples/cues.toml
-
-  frontend:
-    name: frontend
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: app/package-lock.json
-      - run: npm ci
-        working-directory: app
-      - run: npm run build
-        working-directory: app
+      - run: cargo test --locked --manifest-path core/Cargo.toml
+      - run: cargo run --locked --manifest-path core/Cargo.toml --bin next -- examples/cues.toml
 
   shell:
     name: shell (${{ matrix.os }})
@@ -42,12 +69,17 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
       # Tauri on Linux needs the webkit stack before anything compiles
       - if: matrix.os == 'ubuntu-latest'
         run: |
@@ -56,6 +88,38 @@ jobs:
             librsvg2-dev patchelf libgtk-3-dev libasound2-dev libssl-dev
       - run: npm ci
         working-directory: app
+      - run: npm test
+        working-directory: app
       - run: npm run build
         working-directory: app
-      - run: cargo check --manifest-path app/src-tauri/Cargo.toml
+      - run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path app/src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  bundle:
+    name: bundle smoke (${{ matrix.os }})
+    needs: [core]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev libasound2-dev libssl-dev
+      - run: npm ci
+        working-directory: app
+      # Compiles the real binary against the real frontend without spending ten
+      # minutes on installers. Release builds do the bundling.
+      - run: npx tauri build --no-bundle
+        working-directory: app

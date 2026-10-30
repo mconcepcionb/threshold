@@ -1,15 +1,21 @@
 # Starter cues for Threshold.
 #
-# Copy to your config directory and edit, or open the app and use the settings
-# window — both write this same file.
+# The app writes this file when you save. Edit it by hand or in the settings
+# window - both are supported. The settings window offers presets for repeat and
+# late policy; a hand-written file can express any value.
 #
 #   text      required, up to 40 characters, rendered uppercase
-#   at        required: "18:00" | "every 25m" | "in 25m"
+#   at        required: "18:00" | "every 25m" | "in 25m" (in is an alias for every)
 #   repeat    once | daily | weekdays | weekly(mon,wed,fri)     default: once
 #   late      exact | catch_up(10m) | next_opportunity          default: exact
 #   seconds   card duration, 1-120                              default: 4
 #   sting     semitone offset for the thump, -6 to 6            default: 0
 #   enabled   false disarms without deleting                    default: true
+#   anchor    internal: the armed occurrence / interval phase; normally kept in
+#             state.toml beside this file, not written here
+#
+# Top-level keys (version, floor_ms, volume, overlay) are documented in README.md.
+# A one-shot is a wall-clock time with repeat = "once".
 #
 # Half of these are instructions and half are places. The place names are the
 # ones that look most like the thing this project borrowed from.

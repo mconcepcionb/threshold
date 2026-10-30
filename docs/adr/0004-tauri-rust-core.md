@@ -4,7 +4,8 @@ Status: accepted
 
 Tauri over Electron. An empty Tauri app installs at roughly 7-8 MB against
 90-150 MB, and the parts that matter here are native anyway: the scheduler, the
-audio engine, the power assertion and the platform calls that arm a wake.
+audio engine, and the Windows calls that detect a locked screen and hand focus
+back.
 
 The webview is a rendering surface only. It draws the Card; it does not own time,
 audio or OS state. That keeps the three platforms' webview differences (WebView2

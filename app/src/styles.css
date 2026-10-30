@@ -14,9 +14,10 @@
   --line: rgba(255, 255, 255, 0.09);
   --rule: rgba(255, 255, 255, 0.06);
   --muted: #8a9099;
-  --dim: #5b6068;
+  --dim: #7a808a;
   --signal: #c4262e;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
 }
 
 * {
@@ -258,7 +259,7 @@ body.settings {
 }
 
 .next.empty .next-text {
-  color: #34383e;
+  color: #5b6068;
 }
 
 .next-meta {
@@ -467,8 +468,14 @@ button:focus {
   line-height: 1;
 }
 
-.cues li:hover .remove {
+.cues li:hover .remove,
+.remove:focus-visible {
   opacity: 1;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .line-2 {
@@ -520,6 +527,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .banner {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   margin: 0 26px;
