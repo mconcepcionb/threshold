@@ -57,8 +57,8 @@ checked without waiting for a cue. `THRESHOLD_DEMO_NOTIFY=1` posts a notificatio
 three seconds after boot, to exercise the locked-screen path. `/?window=overlay&demo`
 renders the card in a plain browser, for screenshots.
 
-The tray menu carries **Pause for an hour**, **Mute the sting** and **Start at
-login** — the first two are the emergency stop, and neither is persisted across a
+The tray menu carries **Pause for an hour**, **Mute the sting**, **Start at
+login** and **Report a problem** — the first two are the emergency stop, and neither is persisted across a
 restart. While the screen is locked the card cannot be shown, so a cue that fires
 then plays its sting and posts a notification instead.
 
@@ -70,7 +70,10 @@ then plays its sting and posts a notification instead.
 4. **Portability** — Linux and macOS builds, CI matrix.
 5. **Packaging** — signed installers, start at login.
 
-## Cues
+## Volume
+
+One number in the settings header: the sting is a single sound, so it gets a
+single level. It is saved with the config, not per cue.
 
 [`examples/cues.toml`](./examples/cues.toml) is the starter file: twelve cues,
 half instructions and half places, with the field reference in the comments. The
@@ -96,6 +99,12 @@ the chains simply restart. `cues.toml` is written only when you save.
 Windows is the supported target. macOS and Linux build and run; always-on-top
 over fullscreen apps is not available on Wayland, so the overlay may sit under
 other windows there.
+
+## Problems
+
+Alpha software. If it breaks, the tray has **Report a problem**, and a crash
+writes `crash.log` beside your config and opens a prefilled issue at
+[github.com/mconcepcionb/threshold](https://github.com/mconcepcionb/threshold).
 
 ## Licence
 

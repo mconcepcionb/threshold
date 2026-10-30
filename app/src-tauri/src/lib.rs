@@ -26,6 +26,62 @@ use threshold_core::{
 
 static FONT_BYTES: &[u8] = include_bytes!("../../../core/assets/texgyreadventor-bold.otf");
 
+/// Where a crash report goes. One place, so the tray item and the panic hook
+/// cannot disagree about it.
+const REPO_URL: &str = "https://github.com/mconcepcionb/threshold";
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 3);
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// Alpha software should not die silently. A panic writes the report next to the
+/// config and opens a prefilled issue: the person sees what happened, and the
+/// report is one click from arriving somewhere useful.
+fn install_crash_reporter(dir: PathBuf) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let report = format!(
+            "threshold {}\n{}\n{}\n\n{}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            Local::now().to_rfc3339(),
+            info
+        );
+        let path = dir.join("crash.log");
+        let _ = std::fs::write(&path, &report);
+        eprintln!("threshold: crashed, wrote {}", path.display());
+
+        let trimmed: String = report.chars().take(1_200).collect();
+        let url = format!(
+            "{REPO_URL}/issues/new?title={}&body={}",
+            percent_encode("Crash"),
+            percent_encode(&trimmed)
+        );
+        open_url(&url);
+
+        previous(info);
+    }));
+}
+
 struct AutostartItem(Mutex<Option<CheckMenuItem<Wry>>>);
 struct MuteItem(Mutex<Option<CheckMenuItem<Wry>>>);
 
@@ -577,6 +633,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let path = config_path();
+            install_crash_reporter(
+                path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+            );
             let (store, trouble) = open_store(&path);
             let font = Font::from_bytes(FONT_BYTES.to_vec())
                 .map_err(|e| format!("bundled font is unreadable: {e}"))?;
@@ -692,6 +751,7 @@ pub fn run() {
             let resume = MenuItem::with_id(app, "resume", "Resume", true, None::<&str>)?;
             let mute = CheckMenuItem::with_id(app, "mute", "Mute the sting", true, false, None::<&str>)?;
             app.manage(MuteItem(Mutex::new(Some(mute.clone()))));
+            let report = MenuItem::with_id(app, "report", "Report a problem", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
@@ -706,6 +766,7 @@ pub fn run() {
                     &PredefinedMenuItem::separator(app)?,
                     &autostart,
                     &PredefinedMenuItem::separator(app)?,
+                    &report,
                     &quit,
                 ],
             )?;
@@ -721,6 +782,7 @@ pub fn run() {
                     "resume" => resume_now(app),
                     "mute" => toggle_mute(app),
                     "autostart" => toggle_autostart(app),
+                    "report" => open_url(&format!("{REPO_URL}/issues/new")),
                     "quit" => app.exit(0),
                     _ => {}
                 });
