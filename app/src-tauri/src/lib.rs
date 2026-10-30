@@ -113,8 +113,10 @@ struct Runtime {
     muted: bool,
     /// No cards at all until this instant. The impolite half.
     paused_until: Option<DateTime<Local>>,
-    /// Has anything fired yet? The start-up warm-up must not hide a live card.
-    fired: bool,
+    /// The layer currently showing a card, if any, and the window that had focus
+    /// before it took over — so the keyboard can be handed back.
+    active: Option<String>,
+    focus_back: Option<isize>,
     /// The next moment each cue is due. Rebuilt on reload, advanced on fire.
     next: HashMap<u64, Option<DateTime<Local>>>,
     font: Arc<Font>,
@@ -251,6 +253,52 @@ fn add_examples(app: AppHandle, rt: State<'_, Mutex<Runtime>>) -> Result<usize, 
     Ok(added)
 }
 
+/// The Floor is over: input now lands on the card, and it takes the keyboard.
+#[tauri::command]
+fn card_floor(app: AppHandle, label: String) {
+    let state = app.state::<Mutex<Runtime>>();
+    let active = {
+        let rt = match state.lock() {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+        rt.active.clone()
+    };
+    if active.as_deref() != Some(label.as_str()) {
+        return;
+    }
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_ignore_cursor_events(false);
+        let _ = w.set_focus();
+    }
+    trace(&format!("floor {label}"));
+}
+
+/// The Window is over, or the card was dismissed early: input goes back to
+/// pass-through and the keyboard goes back to whoever had it.
+#[tauri::command]
+fn card_end(app: AppHandle, label: String) {
+    let state = app.state::<Mutex<Runtime>>();
+    let previous = {
+        let mut rt = match state.lock() {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+        if rt.active.as_deref() != Some(label.as_str()) {
+            return;
+        }
+        rt.active = None;
+        rt.focus_back.take()
+    };
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_ignore_cursor_events(true);
+    }
+    if let Some(handle) = previous {
+        focus_window(handle);
+    }
+    trace(&format!("end {label}"));
+}
+
 #[tauri::command]
 fn open_settings(app: AppHandle) {
     if let Some(w) = app.get_webview_window("settings") {
@@ -299,6 +347,32 @@ fn notify_behind_the_lock(app: &AppHandle, cue: &Cue) {
     }
 }
 
+/// Which window had focus before a card took it. Taking focus is part of the
+/// interruption; giving it back is not optional, because the layer never hides.
+#[cfg(windows)]
+fn foreground_window() -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let hwnd = unsafe { GetForegroundWindow() };
+    (!hwnd.0.is_null()).then_some(hwnd.0 as isize)
+}
+
+#[cfg(windows)]
+fn focus_window(handle: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+    unsafe {
+        let _ = SetForegroundWindow(HWND(handle as *mut _));
+    }
+}
+
+#[cfg(not(windows))]
+fn foreground_window() -> Option<isize> {
+    None
+}
+
+#[cfg(not(windows))]
+fn focus_window(_handle: isize) {}
+
 fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
     // Which layer is under the pointer right now. Each one was born at its own
     // monitor's size, so nothing here resizes anything.
@@ -310,10 +384,12 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
 
     let (overlays, muted, volume) = {
         let state = app.state::<Mutex<Runtime>>();
-        let rt = match state.lock() {
+        let mut rt = match state.lock() {
             Ok(rt) => rt,
             Err(_) => return,
         };
+        rt.active = Some(String::new()); // filled once the monitor is known
+        rt.focus_back = foreground_window();
         (rt.overlays.clone(), rt.muted, rt.store.config().volume)
     };
 
@@ -328,7 +404,9 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
         .or_else(|| overlays.first().cloned());
 
     let Some(target) = target else { return };
-    let Some(window) = app.get_webview_window(&target.label) else { return };
+    if app.get_webview_window(&target.label).is_none() {
+        return;
+    }
 
     let width_css = target.size.width as f32 / target.scale as f32;
     let Layout { lines, size_px } =
@@ -339,25 +417,19 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
     // A locked screen cannot show a window, so a card fired now would be spent
     // unseen. The sting still plays; the notification is what reaches them.
     let locked = screen_is_locked();
+    trace(&format!("fire \"{}\" locked={locked}", cue.text));
 
-    // one card at a time: if a previous cue is up on another monitor, it goes
-    for other in &overlays {
-        if other.label != target.label {
-            if let Some(w) = app.get_webview_window(&other.label) {
-                if w.is_visible().unwrap_or(false) {
-                    let _ = w.hide();
-                }
-            }
-        }
-    }
-
-    let _ = window.set_always_on_top(true);
-    // the Floor: input passes straight through, so a cue that lands mid-sentence
-    // cannot swallow the keystroke it interrupted
-    let _ = window.set_ignore_cursor_events(true);
+    // one card at a time: every layer is always up, so the other one is only
+    // cleared by the page when it dismisses
     if !locked {
-        let _ = window.show();
         let _ = app.emit_to(&target.label, "card", payload);
+        let state = app.state::<Mutex<Runtime>>();
+        let mut rt = match state.lock() {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+        rt.active = Some(target.label.clone());
+        drop(rt);
     }
 
     if !muted {
@@ -369,28 +441,9 @@ fn fire_card(app: &AppHandle, font: &Font, cue: &Cue, floor_ms: u32) {
         return;
     }
 
-    // after the Floor the Card becomes dismissable, which needs focus
-    let handle = app.clone();
-    let label = target.label.clone();
-    let window_ms = cue.seconds as u64 * 1000;
-    std::thread::spawn(move || {
-        std::thread::sleep(StdDuration::from_millis(floor_ms as u64));
-        if let Some(w) = handle.get_webview_window(&label) {
-            // a card dismissed inside its Floor is already gone: do not take the
-            // keyboard from someone who just clicked it away
-            if w.is_visible().unwrap_or(false) {
-                let _ = w.set_ignore_cursor_events(false);
-                let _ = w.set_focus();
-            }
-        }
-        // the layer is hidden by the page when the Window ends
-        std::thread::sleep(StdDuration::from_millis(window_ms));
-        if let Some(w) = handle.get_webview_window(&label) {
-            if w.is_visible().unwrap_or(false) {
-                let _ = w.set_ignore_cursor_events(true);
-            }
-        }
-    });
+    // The page owns the timing: it calls `card_floor` at the Floor and `card_end`
+    // when the Window is over. Rust only moves input and focus, so there is one
+    // clock instead of two that can disagree.
 }
 
 fn rebuild_next(rt: &mut Runtime) {
@@ -663,7 +716,8 @@ pub fn run() {
                 overlays: Vec::new(),
                 muted: false,
                 paused_until: None,
-                fired: false,
+                active: None,
+                focus_back: None,
                 next: HashMap::new(),
                 font: Arc::new(font),
                 trouble,
@@ -694,7 +748,7 @@ pub fn run() {
                 .skip_taskbar(true)
                 .resizable(false)
                 .shadow(false)
-                .visible(false)
+                .visible(true)
                 .focused(false)
                 .position(monitor.position().x as f64 / scale, monitor.position().y as f64 / scale)
                 .inner_size(logical_w, logical_h)
@@ -723,34 +777,10 @@ pub fn run() {
                 rt.overlays = overlays.clone();
             }
 
-            // Warm the layers up: the first show of a webview paints its surface
-            // for the first time, and doing that in front of a cue is what makes
-            // the first card look different from the rest. Showing an empty
-            // transparent layer for a few milliseconds at boot costs nothing and
-            // pays for every card after it.
-            let warm: Vec<String> = overlays.iter().map(|o| o.label.clone()).collect();
-            let warm_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(StdDuration::from_millis(1500));
-                for label in warm {
-                    // a card that fired in the first second and a half owns the
-                    // screen: warming must not hide it out from under itself
-                    let busy = warm_handle
-                        .try_state::<Mutex<Runtime>>()
-                        .and_then(|s| s.lock().ok().map(|rt| rt.fired))
-                        .unwrap_or(true);
-                    if busy {
-                        break;
-                    }
-                    if let Some(w) = warm_handle.get_webview_window(&label) {
-                        trace(&format!("warm show {label}"));
-                        let _ = w.show();
-                        std::thread::sleep(StdDuration::from_millis(40));
-                        let _ = w.hide();
-                        trace(&format!("warm hide {label}"));
-                    }
-                }
-            });
+            // The layers are never shown or hidden. A webview that is hidden and
+            // resumed repaints blank on the frame it comes back, which is the white
+            // blink: the card is rendered, the surface is not. Leaving every layer
+            // up and click-through means a card is only a DOM change.
 
 
             let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
@@ -832,9 +862,11 @@ pub fn run() {
                 });
             }
 
-            // THRESHOLD_DEMO=1 fires one card four seconds after boot, so the
-            // overlay can be checked without waiting for a cue or clicking a tray.
-            if std::env::var("THRESHOLD_DEMO").is_ok() {
+            // THRESHOLD_DEMO=N fires N cards, six seconds apart, four seconds
+            // after boot — enough to see whether the second one is as clean as
+            // the first without waiting for a cue or clicking a tray.
+            if let Ok(count) = std::env::var("THRESHOLD_DEMO") {
+                let count: usize = count.parse().unwrap_or(1);
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(StdDuration::from_secs(4));
@@ -846,8 +878,15 @@ pub fn run() {
                         };
                         (rt.font.clone(), rt.store.config().floor_ms)
                     };
-                    let cue = Cue::at("GO DRINK WATER", chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-                    fire_card(&handle, &font, &cue, floor);
+                    for n in 0..count {
+                        trace(&format!("demo {}/{count}", n + 1));
+                        let cue = Cue::at(
+                            "GO DRINK WATER",
+                            chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+                        );
+                        fire_card(&handle, &font, &cue, floor);
+                        std::thread::sleep(StdDuration::from_secs(6));
+                    }
                 });
             }
 
@@ -867,6 +906,8 @@ pub fn run() {
             save_state,
             reload_config,
             fire_preview,
+            card_floor,
+            card_end,
             preview_cue,
             add_examples,
             open_settings

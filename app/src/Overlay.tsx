@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 
 type CardPayload = {
   lines: string[];
@@ -43,7 +44,8 @@ export default function Overlay() {
       detachInput();
       setCard(null);
       setInteractive(false);
-      getCurrentWindow().hide().catch(() => {});
+      // the window never hides: clearing the card is the whole dismissal
+      invoke("card_end", { label: getCurrentWindow().label }).catch(() => {});
     }
 
     function show(payload: CardPayload) {
@@ -52,8 +54,14 @@ export default function Overlay() {
       setCard(payload);
       setInteractive(false);
 
+      const label = getCurrentWindow().label;
       const startedAt = window.performance.now();
-      timers.current.push(window.setTimeout(() => setInteractive(true), payload.floorMs));
+      timers.current.push(
+        window.setTimeout(() => {
+          setInteractive(true);
+          invoke("card_floor", { label }).catch(() => {});
+        }, payload.floorMs)
+      );
       timers.current.push(window.setTimeout(dismiss, payload.seconds * 1000));
 
       // any interaction after the Floor dismisses; before it, nothing does
