@@ -30,6 +30,12 @@ static FONT_BYTES: &[u8] = include_bytes!("../../../core/assets/texgyreadventor-
 /// cannot disagree about it.
 const REPO_URL: &str = "https://github.com/mconcepcionb/threshold";
 
+/// One line per window-level event. A visual artefact is either caused by one of
+/// these or it is not, and the log says which.
+fn trace(what: &str) {
+    eprintln!("threshold: {} {what}", Local::now().format("%H:%M:%S%.3f"));
+}
+
 fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
@@ -107,6 +113,8 @@ struct Runtime {
     muted: bool,
     /// No cards at all until this instant. The impolite half.
     paused_until: Option<DateTime<Local>>,
+    /// Has anything fired yet? The start-up warm-up must not hide a live card.
+    fired: bool,
     /// The next moment each cue is due. Rebuilt on reload, advanced on fire.
     next: HashMap<u64, Option<DateTime<Local>>>,
     font: Arc<Font>,
@@ -655,6 +663,7 @@ pub fn run() {
                 overlays: Vec::new(),
                 muted: false,
                 paused_until: None,
+                fired: false,
                 next: HashMap::new(),
                 font: Arc::new(font),
                 trouble,
@@ -724,10 +733,21 @@ pub fn run() {
             std::thread::spawn(move || {
                 std::thread::sleep(StdDuration::from_millis(1500));
                 for label in warm {
+                    // a card that fired in the first second and a half owns the
+                    // screen: warming must not hide it out from under itself
+                    let busy = warm_handle
+                        .try_state::<Mutex<Runtime>>()
+                        .and_then(|s| s.lock().ok().map(|rt| rt.fired))
+                        .unwrap_or(true);
+                    if busy {
+                        break;
+                    }
                     if let Some(w) = warm_handle.get_webview_window(&label) {
+                        trace(&format!("warm show {label}"));
                         let _ = w.show();
                         std::thread::sleep(StdDuration::from_millis(40));
                         let _ = w.hide();
+                        trace(&format!("warm hide {label}"));
                     }
                 }
             });
