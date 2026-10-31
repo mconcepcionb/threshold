@@ -4,12 +4,28 @@ import Overlay from "./Overlay";
 import Settings from "./Settings";
 import "./styles.css";
 
-const isOverlay = new URLSearchParams(window.location.search).get("window") === "overlay";
+const windowKind = new URLSearchParams(window.location.search).get("window");
+const isOverlay = windowKind === "overlay";
+const isBoard = windowKind === "board";
 
-// The overlay window is transparent: the desktop is its backdrop. Only the
-// settings window is allowed to paint a background.
-if (!isOverlay) document.body.classList.add("settings");
+// The overlay window is transparent: the desktop is its backdrop. The settings
+// window paints its own paper. The Board is the one opaque white surface.
+if (!isOverlay && !isBoard) document.body.classList.add("settings");
+if (isBoard) document.body.classList.add("board");
+
+// three.js is only for the Board; keep it out of the cue overlay's bundle.
+const BoardHotline = React.lazy(() => import("./BoardHotline"));
 
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>{isOverlay ? <Overlay /> : <Settings />}</React.StrictMode>
+  <React.StrictMode>
+    {isOverlay ? (
+      <Overlay />
+    ) : isBoard ? (
+      <React.Suspense fallback={null}>
+        <BoardHotline />
+      </React.Suspense>
+    ) : (
+      <Settings />
+    )}
+  </React.StrictMode>
 );

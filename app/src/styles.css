@@ -585,3 +585,223 @@ footer button.primary {
   font: 10px/1 var(--mono);
   color: var(--dim);
 }
+
+/* ------------------------------- the Board -------------------------------- */
+/* The Hotline is the one opaque surface. The Astral Plane is white, the Board
+   is an inverted black pyramid, and the type is black. It never shares a window
+   with the cue overlay. */
+
+body.board {
+  background: #f7f5ef;
+  color: #0b0c0d;
+  color-scheme: light;
+  overflow: hidden;
+}
+
+.board-shell {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #f7f5ef;
+  color: #0b0c0d;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+}
+
+.board-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.board-canvas.hidden {
+  display: none;
+}
+
+.board-grain {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 90% at 50% 38%,
+    transparent 54%,
+    rgba(10, 10, 10, 0.06) 100%
+  );
+  mix-blend-mode: multiply;
+}
+
+.board-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(18px, 3vw, 40px);
+  pointer-events: none;
+}
+
+.board-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid rgba(10, 10, 10, 0.18);
+  padding-bottom: 10px;
+}
+
+.board-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--signal);
+  flex: none;
+}
+
+.board-kicker {
+  font: 10px/1 var(--mono);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.board-caller {
+  margin-left: auto;
+  font: 9px/1.3 var(--mono);
+  letter-spacing: 0.16em;
+  color: #6f757d;
+  text-transform: uppercase;
+  text-align: right;
+}
+
+.board-caller b {
+  color: #0b0c0d;
+  font-weight: 400;
+}
+
+.board-copy {
+  margin-top: auto;
+  margin-bottom: clamp(22px, 3vh, 42px);
+  text-align: center;
+}
+
+.board-line {
+  margin: 0;
+  font-family: "Adventor", "Arial Black", sans-serif;
+  font-size: clamp(2rem, 4.4vw, 4.8rem);
+  line-height: 0.92;
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
+  text-wrap: balance;
+}
+
+.board-slash {
+  color: #9b9b96;
+}
+
+.board-angle {
+  color: #8b8b86;
+}
+
+.board-ask {
+  margin: 16px 0 0;
+  font: 9px/1 var(--mono);
+  letter-spacing: 0.32em;
+  color: #6f757d;
+  text-transform: uppercase;
+}
+
+.board-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid rgba(10, 10, 10, 0.18);
+  padding-top: 12px;
+  pointer-events: auto;
+}
+
+.board-btn {
+  font: 9px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  border: 1px solid rgba(10, 10, 10, 0.35);
+  border-radius: 2px;
+  background: transparent;
+  color: #0b0c0d;
+  cursor: pointer;
+}
+
+.board-btn:hover {
+  border-color: #0b0c0d;
+  background: rgba(10, 10, 10, 0.04);
+}
+
+.board-btn.live {
+  color: var(--signal);
+  border-color: var(--signal);
+}
+
+.board-btn.primary {
+  background: #0b0c0d;
+  border-color: #0b0c0d;
+  color: #f7f5ef;
+}
+
+.board-btn.primary:hover {
+  background: #1d1f22;
+}
+
+.board-hint {
+  margin-left: auto;
+  font: 8px/1.5 var(--mono);
+  letter-spacing: 0.12em;
+  color: #3a3a3a;
+  text-align: right;
+  text-transform: uppercase;
+  text-shadow: 0 0 8px rgba(247, 245, 239, 0.9);
+}
+
+.board-fallback {
+  position: absolute;
+  inset: 0;
+  background: #f7f5ef;
+}
+
+.board-fallback::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 15%;
+  width: min(42vw, 560px);
+  aspect-ratio: 1 / 1.02;
+  transform: translateX(-50%);
+  background: #060606;
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+  filter: drop-shadow(0 40px 38px rgba(0, 0, 0, 0.12));
+}
+
+@media (max-width: 640px) {
+  .board-overlay {
+    padding: 16px 16px 14px;
+  }
+
+  .board-line {
+    font-size: clamp(1.7rem, 8.4vw, 2.6rem);
+  }
+
+  .board-copy {
+    margin-bottom: 5vh;
+  }
+
+  .board-hint {
+    display: none;
+  }
+
+  .board-actions {
+    gap: 6px;
+  }
+
+  .board-btn {
+    flex: 1;
+    padding: 10px 8px;
+  }
+}
